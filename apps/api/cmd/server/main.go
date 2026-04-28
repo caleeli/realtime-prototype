@@ -24,6 +24,7 @@ const cerebrasDefaultEndpoint = "https://api.cerebras.ai/v1/chat/completions"
 const cerebrasDefaultModel = "llama3.1-8b"
 const generationSystemPromptTemplatePath = "cmd/server/generation-system-prompt.txt"
 const generationSystemPromptTemplateEnv = "GENERATION_SYSTEM_PROMPT_PATH"
+const generationRepairEnabledEnv = "GENERATION_REPAIR_ENABLED"
 
 func main() {
 	loadEnvFile(".env")
@@ -292,105 +293,67 @@ func callCerebrasGeneration(ctx context.Context, input generationRequest) (gener
 
 	timeoutMs := parseIntFromEnv("CEREBRAS_TIMEOUT_MS", 20000)
 	clientTimeout := time.Duration(timeoutMs) * time.Millisecond
-	callCtx, cancel := context.WithTimeout(ctx, clientTimeout)
-	defer cancel()
-
 	messages := buildCerebrasRequestMessages(input)
-	requestBytes, err := json.Marshal(messages)
-	if err == nil {
-		fmt.Println(string(requestBytes))
-	} else {
-		fmt.Printf("failed to marshal llm request: %v", err)
-	}
 
-	reqBody := cerebrasChatPayload{
-		Model:    model,
-		Messages: messages,
-		ResponseFormat: &cerebrasResponseFormat{
-			Type: "json_object",
-		},
+	maxAttempts := 1
+	repairEnabled := parseBoolFromEnv(generationRepairEnabledEnv, false)
+	if repairEnabled {
+		maxAttempts = 2
 	}
-
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		return generationResponse{}, fmt.Errorf("failed to encode request: %w", err)
-	}
-
-	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return generationResponse{}, err
-	}
-
-	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("Authorization", "Bearer "+apiKey)
-
-	httpClient := &http.Client{Timeout: clientTimeout}
-	resp, err := httpClient.Do(httpRequest)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return generationResponse{}, fmt.Errorf("cerebras request timeout")
-		}
-		return generationResponse{}, err
-	}
-	defer resp.Body.Close()
-
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return generationResponse{}, err
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		errorMessage := strings.TrimSpace(string(responseBody))
-		if errorMessage == "" {
-			errorMessage = http.StatusText(resp.StatusCode)
-		}
-		return generationResponse{}, fmt.Errorf("cerebras API returned %d: %s", resp.StatusCode, errorMessage)
-	}
-
-	var parsed cerebrasChatResponse
-	if err := json.Unmarshal(responseBody, &parsed); err != nil {
-		return generationResponse{}, fmt.Errorf("invalid cerebras response: %w", err)
-	}
-
-	if len(parsed.Choices) == 0 {
-		return generationResponse{}, fmt.Errorf("empty response from cerebras")
-	}
-	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
-	if content == "" {
-		return generationResponse{}, fmt.Errorf("empty content from cerebras")
-	}
-	fmt.Println(content)
-
-	jsonCandidate, err := extractJSONFromText(content)
-	if err != nil {
-		return generationResponse{}, fmt.Errorf("model output is not JSON: %w", err)
-	}
-	fmt.Println(jsonCandidate)
 
 	var output generationResponse
-	jsonCandidate = sanitizeJSONCandidate(jsonCandidate)
-	if err := json.Unmarshal([]byte(jsonCandidate), &output); err != nil {
-		if err := decodeLooseJSONOutput(jsonCandidate, &output); err != nil {
-			return generationResponse{}, fmt.Errorf("invalid generated JSON format: %w\n%s", err, jsonCandidate)
-		}
-	}
-
-	output = sanitizeGenerationResponse(output)
-	if looksLikeHTML(output.Pug) {
-		converted, err := convertHTMLToPug(output.Pug)
+	var outputContent string
+	var jsonCandidate string
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		jsonCandidate = ""
+		content, err := requestCerebrasContent(ctx, endpoint, model, apiKey, clientTimeout, messages)
 		if err != nil {
-			log.Printf("warning: failed to parse model HTML output in pug field: %v", err)
-		} else if strings.TrimSpace(converted) != "" {
-			log.Printf("warning: model returned HTML in pug field; converted to pseudo-Pug")
-			output.Pug = strings.TrimSpace(converted)
+			return generationResponse{}, err
 		}
-	}
-	if err := validateGenerationResponse(&output); err != nil {
-		return generationResponse{}, fmt.Errorf("invalid generated response: %w", err)
-	}
-	output.Messages = appendConversationMessagesForResponse(messages, content)
+		outputContent = content
 
-	return output, nil
+		jsonCandidate, err = extractJSONFromText(outputContent)
+		if err != nil {
+			lastErr = fmt.Errorf("model output is not JSON: %w", err)
+		} else {
+			jsonCandidate = normalizeGeneratedJSONCandidate(jsonCandidate)
+			lastErr = parseGenerationJSONCandidate(jsonCandidate, &output)
+		}
+
+		if lastErr == nil {
+			output = sanitizeGenerationResponse(output)
+			if looksLikeHTML(output.Pug) {
+				converted, err := convertHTMLToPug(output.Pug)
+				if err != nil {
+					log.Printf("warning: failed to parse model HTML output in pug field: %v", err)
+				} else if strings.TrimSpace(converted) != "" {
+					log.Printf("warning: model returned HTML in pug field; converted to pseudo-Pug")
+					output.Pug = strings.TrimSpace(converted)
+				}
+			}
+			if err := validateGenerationResponse(&output); err != nil {
+				lastErr = fmt.Errorf("invalid generated response: %w", err)
+			} else {
+				output.Messages = appendConversationMessagesForResponse(messages, outputContent)
+				return output, nil
+			}
+		}
+
+		if !repairEnabled || attempt+1 >= maxAttempts || !isRecoverableGeneratedJSONError(lastErr) {
+			return generationResponse{}, fmt.Errorf("%w\n%s", lastErr, jsonCandidate)
+		}
+
+		messages = append(messages, cerebrasChatMessage{
+			Role:    "assistant",
+			Content: outputContent,
+		}, cerebrasChatMessage{
+			Role:    "user",
+			Content: buildGenerationRepairPrompt(outputContent, jsonCandidate, lastErr),
+		})
+	}
+
+	return generationResponse{}, fmt.Errorf("%w\n%s", lastErr, outputContent)
 }
 
 func buildCerebrasRequestMessages(input generationRequest) []cerebrasChatMessage {
@@ -561,6 +524,8 @@ Return exactly one JSON object, no markdown, no fences, no code blocks, no comme
 The JSON must contain exactly these keys: "pug", "css", "data".
 All keys and string values must be valid JSON and quoted with double quotes.
 Do not add comments, trailing commas, single-quoted strings, unquoted keys, backticks, markdown, or extra text.
+If css contains quoted property names, do not include those quotes (for example avoid "max-width":, use max-width:).
+Double quotes used inside pug or css strings must be escaped as \\\" in the JSON output.
 pug must be plain Pug markup and must never contain HTML tags like <div> or </div>.
 Reject the temptation to use HTML; always use Pug indentation syntax.
 Do not emit any keys other than pug, css, and data.
@@ -877,6 +842,263 @@ func firstAvailableString(values map[string]interface{}, keys []string) string {
 	return ""
 }
 
+func parseGenerationJSONOutput(raw string, output *generationResponse) error {
+	return parseGenerationJSONCandidate(raw, output)
+}
+
+func normalizeGeneratedJSONCandidate(raw string) string {
+	text := sanitizeJSONCandidate(raw)
+	return strings.TrimSpace(text)
+}
+
+func repairEscapedFieldDelimiters(raw string) string {
+	fieldKeys := []string{"pug", "css", "data", "Pug", "Css", "Data"}
+	fieldPattern := strings.Join(fieldKeys, "|")
+
+	fieldKeyPattern := regexp.MustCompile(`([,{]\s*)\\*"((?:` + fieldPattern + `))"\s*:`)
+	raw = fieldKeyPattern.ReplaceAllString(raw, `$1"$2":`)
+
+	fieldOpenPattern := regexp.MustCompile(`("(?:(?:` + fieldPattern + `)"\s*:\s*)\\+"`)
+	raw = fieldOpenPattern.ReplaceAllString(raw, `$1"`)
+
+	fieldClosePattern := regexp.MustCompile(`\\+"\s*(,\s*"(?:` + fieldPattern + `)"\s*:)`)
+	raw = fieldClosePattern.ReplaceAllString(raw, `",$1`)
+
+	fieldCloseFinalPattern := regexp.MustCompile(`\\+"\s*}`)
+	raw = fieldCloseFinalPattern.ReplaceAllString(raw, `"}`)
+
+	return raw
+}
+
+func isRecoverableGeneratedJSONError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "invalid character") ||
+		strings.Contains(message, "invalid generated JSON format") ||
+		strings.Contains(message, "model output is not JSON")
+}
+
+func buildGenerationRepairPrompt(rawOutput string, normalizedCandidate string, parseErr error) string {
+	errText := "invalid JSON output"
+	if parseErr != nil {
+		errText = strings.TrimSpace(parseErr.Error())
+	}
+
+	return fmt.Sprintf(`The previous assistant output was not valid JSON for the generation contract.
+Return only one valid JSON object with keys "pug", "css", and "data".
+Rules:
+- No markdown, no fences, no comments, no extra text.
+- Keep exactly the keys "pug", "css", and "data" only.
+- If CSS or Pug text requires double quotes, escape them as JSON string quotes.
+- In CSS, avoid quoted property names such as "max-width"; use max-width instead.
+Error: %s
+Raw output to repair:
+%s
+Normalized candidate used for parsing:
+%s`, errText, rawOutput, normalizedCandidate)
+}
+
+func requestCerebrasContent(ctx context.Context, endpoint, model, apiKey string, timeout time.Duration, messages []cerebrasChatMessage) (string, error) {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	reqBody := cerebrasChatPayload{
+		Model:    model,
+		Messages: messages,
+		ResponseFormat: &cerebrasResponseFormat{
+			Type: "json_object",
+		},
+	}
+
+	payload, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode request: %w", err)
+	}
+	requestBytes, err := json.Marshal(messages)
+	if err == nil {
+		fmt.Println(string(requestBytes))
+	} else {
+		fmt.Printf("failed to marshal llm request: %v", err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Authorization", "Bearer "+apiKey)
+
+	httpClient := &http.Client{Timeout: timeout}
+	resp, err := httpClient.Do(httpRequest)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("cerebras request timeout")
+		}
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errorMessage := strings.TrimSpace(string(responseBody))
+		if errorMessage == "" {
+			errorMessage = http.StatusText(resp.StatusCode)
+		}
+		return "", fmt.Errorf("cerebras API returned %d: %s", resp.StatusCode, errorMessage)
+	}
+
+	var parsed cerebrasChatResponse
+	if err := json.Unmarshal(responseBody, &parsed); err != nil {
+		return "", fmt.Errorf("invalid cerebras response: %w", err)
+	}
+
+	if len(parsed.Choices) == 0 {
+		return "", fmt.Errorf("empty response from cerebras")
+	}
+	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
+	if content == "" {
+		return "", fmt.Errorf("empty content from cerebras")
+	}
+	fmt.Println(content)
+	return content, nil
+}
+
+func repairUnescapedJSONStringQuotes(raw string) string {
+	var output strings.Builder
+	inString := false
+	escaped := false
+	stringStart := -1
+
+	for i := 0; i < len(raw); i++ {
+		character := raw[i]
+
+		if !inString {
+			output.WriteByte(character)
+			if character == '"' {
+				inString = true
+				stringStart = i
+			}
+			continue
+		}
+
+		if escaped {
+			output.WriteByte(character)
+			escaped = false
+			continue
+		}
+
+		if character == '\\' {
+			output.WriteByte(character)
+			escaped = true
+			continue
+		}
+
+		if character == '"' {
+			if isJSONStringTerminator(raw, i+1) {
+				if isQuotedCSSPropertyName(raw, stringStart, i) {
+					output.WriteString(`\\\"`)
+					continue
+				}
+				inString = false
+				output.WriteByte(character)
+			} else {
+				output.WriteString(`\\\"`)
+			}
+			continue
+		}
+
+		output.WriteByte(character)
+	}
+
+	return output.String()
+}
+
+func repairEscapedKeyLikeQuotes(raw string) string {
+	return regexp.MustCompile(`\\\"([A-Za-z_][A-Za-z0-9_-]*)"\s*:`).ReplaceAllString(raw, `"$1":`)
+}
+
+func isQuotedCSSPropertyName(raw string, stringStart int, quoteIndex int) bool {
+	if stringStart < 0 || quoteIndex <= stringStart || quoteIndex >= len(raw) {
+		return false
+	}
+
+	stringContent := raw[stringStart+1 : quoteIndex]
+	stringContent = strings.TrimRight(stringContent, " \t\r\n")
+	if stringContent == "" {
+		return false
+	}
+
+	tokenEnd := len(stringContent)
+	tokenStart := tokenEnd
+	for tokenStart > 0 && isCSSPropertyChar(rune(stringContent[tokenStart-1])) {
+		tokenStart--
+	}
+	token := stringContent[tokenStart:tokenEnd]
+	if token == "" || !isCSSPropertyToken(token) {
+		return false
+	}
+
+	prefix := strings.TrimRight(stringContent[:tokenStart], " \t\r\n")
+	if prefix == "" {
+		return true
+	}
+	last := rune(prefix[len(prefix)-1])
+	if last == '{' || last == ';' || last == '(' {
+		return true
+	}
+
+	return false
+}
+
+func isCSSPropertyToken(text string) bool {
+	for i, char := range text {
+		if i == 0 {
+			if char != '-' && !isASCIILetter(char) {
+				return false
+			}
+			continue
+		}
+		if !isCSSPropertyChar(char) {
+			return false
+		}
+	}
+	return text != ""
+}
+
+func isCSSPropertyChar(char rune) bool {
+	return isASCIILetter(char) || (char >= '0' && char <= '9') || char == '-' || char == '_'
+}
+
+func isASCIILetter(char rune) bool {
+	return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
+}
+
+func isJSONStringTerminator(raw string, start int) bool {
+	for start < len(raw) && unicode.IsSpace(rune(raw[start])) {
+		start++
+	}
+	if start >= len(raw) {
+		return true
+	}
+
+	switch raw[start] {
+	case ':', ',', '}', ']':
+		return true
+	}
+	return false
+}
+
 func sanitizeJSONCandidate(raw string) string {
 	text := strings.TrimSpace(raw)
 	if text == "" {
@@ -902,6 +1124,18 @@ func parseIntFromEnv(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func parseBoolFromEnv(key string, fallback bool) bool {
+	rawValue := strings.TrimSpace(os.Getenv(key))
+	if rawValue == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(rawValue)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func loadEnvFile(path string) {

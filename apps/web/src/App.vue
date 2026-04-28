@@ -225,6 +225,15 @@ async function onRefresh(messageIndex: number) {
   await renderPipeline(targetMessage.content, conversation.value);
 }
 
+function onRollback() {
+  if (isGenerating.value || lastUserMessageIndex.value < 0) {
+    return;
+  }
+
+  conversation.value = normalizeChatMessages(conversation.value.slice(0, lastUserMessageIndex.value));
+  message.value = 'Rollback aplicado. Escribe un nuevo mensaje del usuario para generar otra respuesta.';
+}
+
 onBeforeUnmount(() => {
   if (cleanupStyle.value) {
     cleanupStyle.value();
@@ -297,6 +306,15 @@ onBeforeUnmount(() => {
           @click="onRefresh(lastUserMessageIndex)"
         >
           ⟳
+        </button>
+        <button
+          type="button"
+          class="conversation-rollback"
+          :disabled="isGenerating || lastUserMessageIndex < 0"
+          title="Quitar último mensaje del usuario y respuestas siguientes"
+          @click="onRollback"
+        >
+          ⟲
         </button>
       </div>
       <p class="prompt-msg">{{ message }}</p>
@@ -493,6 +511,13 @@ onBeforeUnmount(() => {
 }
 
 .prompt-actions .conversation-refresh {
+  width: 44px;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  flex: 0 0 auto;
+}
+
+.prompt-actions .conversation-rollback {
   width: 44px;
   aspect-ratio: 1 / 1;
   border-radius: 10px;
