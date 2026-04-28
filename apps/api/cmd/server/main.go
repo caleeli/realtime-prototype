@@ -266,6 +266,14 @@ type cerebrasResponseFormat struct {
 }
 
 type cerebrasChatResponse struct {
+	Usage struct {
+		PromptTokens       int `json:"prompt_tokens"`
+		CompletionTokens   int `json:"completion_tokens"`
+		TotalTokens        int `json:"total_tokens"`
+		PromptTokensDetail struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+	} `json:"usage,omitempty"`
 	Choices []struct {
 		Message struct {
 			Role    string `json:"role"`
@@ -966,6 +974,17 @@ func requestCerebrasContent(ctx context.Context, endpoint, model, apiKey string,
 	if len(parsed.Choices) == 0 {
 		return "", fmt.Errorf("empty response from cerebras")
 	}
+
+	if parsed.Usage.TotalTokens > 0 || parsed.Usage.PromptTokensDetail.CachedTokens > 0 {
+		log.Printf(
+			"cerebras usage: total_tokens=%d cached_tokens=%d prompt_tokens=%d completion_tokens=%d",
+			parsed.Usage.TotalTokens,
+			parsed.Usage.PromptTokensDetail.CachedTokens,
+			parsed.Usage.PromptTokens,
+			parsed.Usage.CompletionTokens,
+		)
+	}
+
 	content := strings.TrimSpace(parsed.Choices[0].Message.Content)
 	if content == "" {
 		return "", fmt.Errorf("empty content from cerebras")
