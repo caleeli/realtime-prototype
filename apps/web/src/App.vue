@@ -75,6 +75,7 @@ const message = ref('Escribe una descripción y pulsa "Generar pantalla".');
 const generatedState: Ref<GeneratedViewState | null> = ref(null);
 const generatedComponent: Ref<Component | null> = ref(null);
 const cleanupStyle = ref<(() => void) | null>(null);
+const screenRevision = ref(0);
 
 const lastUserMessageIndex = computed(() => {
   for (let i = conversation.value.length - 1; i >= 0; i -= 1) {
@@ -145,10 +146,8 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
   isGenerating.value = true;
   message.value = 'Generando pantalla...';
 
-  if (cleanupStyle.value) {
-    cleanupStyle.value();
-    cleanupStyle.value = null;
-  }
+  const previousStyleCleanup = cleanupStyle.value;
+  const nextStyleId = `pipeline-runtime-generated-${screenRevision.value + 1}`;
 
   const payload: GenerationRequest = {
     prompt,
@@ -174,7 +173,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
 
     const renderedView = await buildGeneratedScreen(pipelineOutput, {
       componentLoaders,
-      styleId: 'pipeline-runtime-generated',
+      styleId: nextStyleId,
     });
 
     cleanupStyle.value = renderedView.installStyles;
@@ -184,13 +183,16 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
       component: renderedView.component,
     };
     generatedComponent.value = markRaw(renderedView.component);
+    screenRevision.value += 1;
+
+    if (previousStyleCleanup) {
+      previousStyleCleanup();
+    }
 
     message.value = renderedView.missingComponents.length
       ? `Pantalla renderizada con componentes faltantes: ${renderedView.missingComponents.join(', ')}`
       : 'Pantalla renderizada correctamente.';
   } catch (error) {
-    generatedComponent.value = null;
-    generatedState.value = null;
     message.value = error instanceof Error ? error.message : 'No se pudo generar la pantalla.';
   } finally {
     isGenerating.value = false;
@@ -251,10 +253,17 @@ onBeforeUnmount(() => {
       </header>
 
       <article class="canvas-surface">
-        <div v-if="isGenerating" class="canvas-state">Generando...</div>
-        <div v-else-if="!generatedComponent" class="canvas-state">{{ message }}</div>
-        <div v-else class="canvas-content">
+        <Transition name="canvas-screen" mode="out-in">
+          <div v-if="generatedComponent" :key="screenRevision" class="canvas-content">
           <component :is="generatedComponent" />
+          </div>
+          <div v-else key="empty" class="canvas-state">{{ message }}</div>
+        </Transition>
+        <div v-if="isGenerating" class="canvas-status-layer">
+          <div class="canvas-status-chip">
+            <span class="canvas-status-dot" aria-hidden="true"></span>
+            {{ generatedComponent ? 'Actualizando pantalla...' : 'Generando pantalla...' }}
+          </div>
         </div>
       </article>
 
@@ -363,6 +372,7 @@ onBeforeUnmount(() => {
   max-height: calc(100vh - 14rem);
   overflow: auto;
   color: #111;
+  position: relative;
 }
 
 .canvas-state {
@@ -376,6 +386,66 @@ onBeforeUnmount(() => {
 
 .canvas-content {
   padding: 1rem;
+}
+
+.canvas-status-layer {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(253, 254, 255, 0.7);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+
+.canvas-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: 999px;
+  background: #141a33;
+  color: #edf1ff;
+  font-size: 0.9rem;
+  box-shadow: 0 8px 20px rgba(18, 21, 40, 0.2);
+}
+
+.canvas-status-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: #4fc3f7;
+  animation: canvas-pulse 1.1s infinite;
+}
+
+.canvas-screen-enter-active,
+.canvas-screen-leave-active {
+  transition:
+    opacity 0.32s ease,
+    transform 0.32s ease,
+    filter 0.32s ease;
+}
+
+.canvas-screen-enter-from,
+.canvas-screen-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+  filter: blur(4px);
+}
+
+@keyframes canvas-pulse {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.45;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.92);
+    opacity: 0.45;
+  }
 }
 
 .canvas-meta {
