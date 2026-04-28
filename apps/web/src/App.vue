@@ -85,6 +85,18 @@ const lastUserMessageIndex = computed(() => {
   return -1;
 });
 
+const lastUserMessage = computed(() => {
+  const index = lastUserMessageIndex.value;
+  if (index < 0) {
+    return '';
+  }
+  return conversation.value[index]?.content ?? '';
+});
+
+const promptPlaceholder = computed(() => {
+  return lastUserMessage.value.trim() || 'Ejemplo: crea una pantalla con header, botón y tabla de tareas';
+});
+
 function normalizeChatMessages(messages: ChatMessage[]): ChatMessage[] {
   const normalized: ChatMessage[] = [];
   for (const message of messages) {
@@ -265,27 +277,28 @@ onBeforeUnmount(() => {
             <span v-if="entry.role === 'user'">{{ entry.content }}</span>
             <span v-else class="assistant-icon">📟</span>
           </div>
-          <button
-            v-if="entry.role === 'user' && index === lastUserMessageIndex"
-            type="button"
-            class="conversation-refresh"
-            :disabled="isGenerating"
-            title="Regenerar desde este mensaje"
-            @click="onRefresh(index)"
-          >
-            ⟳
-          </button>
         </div>
       </div>
       <textarea
         v-model="promptText"
         rows="4"
-        placeholder="Ejemplo: crea una pantalla con header, botón y tabla de tareas"
+        :placeholder="promptPlaceholder"
         :disabled="isGenerating"
       ></textarea>
-      <button type="button" :disabled="isGenerating" @click="onGenerate">
-        {{ isGenerating ? 'Generando…' : '▶' }}
-      </button>
+      <div class="prompt-actions">
+        <button type="button" :disabled="isGenerating" @click="onGenerate">
+          {{ isGenerating ? 'Generando…' : '▶' }}
+        </button>
+        <button
+          type="button"
+          class="conversation-refresh"
+          :disabled="isGenerating || lastUserMessageIndex < 0"
+          title="Regenerar desde el último mensaje"
+          @click="onRefresh(lastUserMessageIndex)"
+        >
+          ⟳
+        </button>
+      </div>
       <p class="prompt-msg">{{ message }}</p>
     </section>
   </main>
@@ -463,6 +476,27 @@ onBeforeUnmount(() => {
 
 .floating-prompt button:hover:not(:disabled) {
   background: #5c9bff;
+}
+
+.prompt-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.prompt-actions button {
+  margin-top: 0;
+}
+
+.prompt-actions button:first-child {
+  flex: 1;
+}
+
+.prompt-actions .conversation-refresh {
+  width: 44px;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  flex: 0 0 auto;
 }
 
 .floating-prompt button:disabled {
