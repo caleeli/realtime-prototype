@@ -429,6 +429,89 @@ function resolveAttributeValue(
   return { skip: false, props };
 }
 
+type SlotRenderer = (slotProps?: PipelineScreenData) => VNode | string | Array<VNode | string>;
+type SlotRegistry = Record<string, SlotRenderer>;
+
+function parseSlotName(attributeName: string): string | null {
+  if (!attributeName.startsWith('v-slot')) {
+    if (attributeName.startsWith('#')) {
+      return attributeName.slice(1);
+    }
+    return null;
+  }
+  if (attributeName === 'v-slot') {
+    return 'default';
+  }
+  if (attributeName.startsWith('v-slot:')) {
+    return attributeName.slice('v-slot:'.length);
+  }
+  return null;
+}
+
+function isSlotTemplateNode(node: PugTemplateNode): node is PugTreeElementNode {
+  if (!isElementNode(node)) {
+    return false;
+  }
+  const tag = normalizeTag(node.tag);
+  return tag === 'template' && Object.keys(node.attributes).some((name) => name.startsWith('v-slot'));
+}
+
+function getSlotName(node: PugTreeElementNode): string | null {
+  for (const attributeName of Object.keys(node.attributes)) {
+    const slotName = parseSlotName(attributeName);
+    if (slotName !== null) {
+      return slotName;
+    }
+  }
+  return null;
+}
+
+function renderSlotChildren(
+  source: PugTemplateNode[],
+  context: PipelineScreenData,
+  componentRegistry?: Record<string, DefineComponent>,
+): { children: Array<VNode | string>; slots: SlotRegistry } {
+  const children: Array<VNode | string> = [];
+  const slots: SlotRegistry = {};
+
+  for (const child of source) {
+    if (isSlotTemplateNode(child)) {
+      const slotName = getSlotName(child);
+      if (slotName) {
+        slots[slotName] = (slotContext: PipelineScreenData = {}) => {
+          const renderContext = {
+            ...context,
+            ...slotContext,
+          };
+          const rendered = toVNodeList(child.children, renderContext, componentRegistry);
+          return rendered;
+        };
+        continue;
+      }
+    }
+
+    const childNode = toVNode(child, context, componentRegistry);
+    if (childNode === null) {
+      continue;
+    }
+    if (typeof childNode === 'string') {
+      children.push(childNode);
+      continue;
+    }
+    if (Array.isArray(childNode)) {
+      for (const item of childNode) {
+        if (item !== null) {
+          children.push(item);
+        }
+      }
+      continue;
+    }
+    children.push(childNode);
+  }
+
+  return { children, slots };
+}
+
 function toVNode(
   node: PugTemplateNode,
   context: PipelineScreenData,
@@ -451,6 +534,7 @@ function toVNode(
 
   const props: Record<string, unknown> = {};
   const children: Array<VNode | string> = [];
+  const slots: SlotRegistry = {};
 
   let skipNode = false;
   for (const [rawKey, rawValue] of Object.entries(node.attributes)) {
@@ -466,25 +550,10 @@ function toVNode(
     return null;
   }
 
-  for (const child of node.children) {
-    const childNode = toVNode(child, context, componentRegistry);
-    if (childNode === null) {
-      continue;
-    }
-
-    if (typeof childNode === 'string') {
-      children.push(childNode);
-      continue;
-    }
-    if (Array.isArray(childNode)) {
-      childNode.forEach((item) => {
-        if (item !== null) {
-          children.push(item);
-        }
-      });
-      continue;
-    }
-    children.push(childNode);
+  if (node.children.length > 0) {
+    const rendered = renderSlotChildren(node.children, context, componentRegistry);
+    children.push(...rendered.children);
+    Object.assign(slots, rendered.slots);
   }
 
   const normalizedNodeTag = normalizeTag(node.tag);
@@ -494,6 +563,12 @@ function toVNode(
     componentRegistry?.[bootstrapNodeTag] ??
     componentRegistry?.[toPascalTag(bootstrapNodeTag)];
   if (registered) {
+    if (Object.keys(slots).length > 0) {
+      if (!slots.default && children.length > 0) {
+        slots.default = () => children;
+      }
+      return h(registered, props, slots);
+    }
     return h(registered, props, children);
   }
 
@@ -526,17 +601,26 @@ function evaluateArrayToVNodes(values: unknown[], context: PipelineScreenData): 
   return nodes;
 }
 
+function toVNodeList(
+  nodes: PugTemplateNode[],
+  context: PipelineScreenData,
+  componentRegistry?: Record<string, DefineComponent>,
+): Array<VNode | string> {
+  return nodes
+    .map((child) => toVNode(child, context, componentRegistry))
+    .filter((node): node is VNode | string | Array<VNode | string> => node !== null)
+    .flatMap((node) => {
+      return Array.isArray(node) ? node : [node];
+    })
+    .filter((node): node is VNode | string => node !== null);
+}
+
 function collectChildren(
   tree: GenerationPipelineResult['template'],
   context: PipelineScreenData,
   componentRegistry?: Record<string, DefineComponent>,
 ): VNode | string | Array<VNode | string> {
-  const renderedChildren = tree.children
-    .map((child) => toVNode(child, context, componentRegistry))
-    .filter((node): node is VNode | string | Array<VNode | string> => node !== null)
-    .flatMap((node) => {
-      return Array.isArray(node) ? node : [node];
-    });
+  const renderedChildren = toVNodeList(tree.children, context, componentRegistry);
 
   if (renderedChildren.length === 0) {
     return '';
