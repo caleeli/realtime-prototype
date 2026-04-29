@@ -80,9 +80,6 @@ const cleanupStyle = ref<(() => void) | null>(null);
 const screenRevision = ref(0);
 const BOOTSWATCH_VERSION = '5.3.8';
 const BOOTSWATCH_LINK_ID = 'bootswatch-theme-runtime';
-const activeTheme = ref<'bootstrap' | 'cerulean' | 'cosmo' | 'darkly' | 'flatly' | 'journal' | 'litera' | 'lux' | 'lumen' | 'pulse' | 'sandstone' | 'simplex' | 'sketchy' | 'slate' | 'solar' | 'superhero' | 'united' | 'vapor' | 'yeti'>(
-  'bootstrap',
-);
 
 const themeOptions: { value: string; label: string }[] = [
   { value: 'bootstrap', label: 'Bootstrap (default)' },
@@ -105,6 +102,106 @@ const themeOptions: { value: string; label: string }[] = [
   { value: 'vapor', label: 'Vapor' },
   { value: 'yeti', label: 'Yeti' },
 ];
+
+type ThemeOption = (typeof themeOptions)[number]['value'];
+type ThemeDirection = 'left' | 'right';
+
+const activeTheme = ref<ThemeOption>('bootstrap');
+const themeTransitionDirection = ref<ThemeDirection>('right');
+const themeSwipeStartX = ref<number | null>(null);
+const THEME_SWIPE_THRESHOLD = 60;
+
+const activeThemeIndex = computed(() => {
+  return themeOptions.findIndex((theme) => theme.value === activeTheme.value);
+});
+
+const activeThemeLabel = computed(() => {
+  const index = activeThemeIndex.value;
+  if (index < 0) {
+    return 'Tema';
+  }
+  return themeOptions[index]?.label ?? 'Tema';
+});
+
+const themeTransitionKey = computed(() => `${screenRevision.value}-${activeTheme.value}`);
+
+function getThemeByOffset(offset: number) {
+  const index = activeThemeIndex.value;
+  if (index < 0 || themeOptions.length === 0) {
+    return null;
+  }
+  const nextIndex = (index + offset + themeOptions.length) % themeOptions.length;
+  return themeOptions[nextIndex];
+}
+
+function switchTheme(direction: ThemeDirection) {
+  const nextTheme = getThemeByOffset(direction === 'right' ? 1 : -1);
+  if (!nextTheme) {
+    return;
+  }
+  if (nextTheme.value === activeTheme.value) {
+    return;
+  }
+  themeTransitionDirection.value = direction;
+  activeTheme.value = nextTheme.value;
+}
+
+function isThemeHotkey(event: KeyboardEvent) {
+  const key = event.key;
+  if (key !== 'ArrowLeft' && key !== 'ArrowRight') {
+    return;
+  }
+
+  if (event.target instanceof HTMLElement) {
+    const tagName = event.target.tagName.toLowerCase();
+    const editable =
+      tagName === 'input' ||
+      tagName === 'textarea' ||
+      tagName === 'select' ||
+      event.target.isContentEditable;
+    if (editable) {
+      return;
+    }
+  }
+
+  if (key === 'ArrowLeft') {
+    event.preventDefault();
+    switchTheme('left');
+  } else {
+    event.preventDefault();
+    switchTheme('right');
+  }
+}
+
+function onThemeSwipeStart(event: TouchEvent) {
+  const point = event.changedTouches[0];
+  if (!point) {
+    return;
+  }
+  themeSwipeStartX.value = point.clientX;
+}
+
+function onThemeSwipeEnd(event: TouchEvent) {
+  const startX = themeSwipeStartX.value;
+  themeSwipeStartX.value = null;
+
+  if (startX === null) {
+    return;
+  }
+  const point = event.changedTouches[0];
+  if (!point) {
+    return;
+  }
+  const deltaX = point.clientX - startX;
+  if (Math.abs(deltaX) < THEME_SWIPE_THRESHOLD) {
+    return;
+  }
+  if (deltaX > 0) {
+    switchTheme('left');
+  } else {
+    switchTheme('right');
+  }
+}
 
 function getBootswatchHref(theme: string): string | null {
   if (!theme || theme === 'bootstrap') {
@@ -151,6 +248,7 @@ watch(activeTheme, (theme) => {
 });
 
 onMounted(() => {
+  window.addEventListener('keydown', isThemeHotkey);
   applyThemeRuntime(activeTheme.value);
 });
 
@@ -314,6 +412,7 @@ function onRollback() {
 }
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', isThemeHotkey);
   if (cleanupStyle.value) {
     cleanupStyle.value();
     cleanupStyle.value = null;
@@ -330,23 +429,32 @@ onBeforeUnmount(() => {
             <h1>Builder Editor</h1>
             <p>Genera pantallas con IA y las dibuja en vivo en el canvas.</p>
           </div>
-          <label class="theme-control">
+          <label
+            class="theme-control"
+            @touchstart="onThemeSwipeStart"
+            @touchend="onThemeSwipeEnd"
+          >
             Tema
-            <select v-model="activeTheme" class="theme-select" aria-label="Selector de tema visual">
-              <option v-for="option in themeOptions" :key="option.value" :value="option.value">
-                {{ option.label }}
-              </option>
-            </select>
+            <div class="theme-switch" aria-label="Cambio rápido de tema">
+              <button type="button" class="theme-switch-btn" @click="switchTheme('left')" title="Tema anterior (←)">
+                ◀
+              </button>
+              <span class="theme-current">{{ activeThemeLabel }}</span>
+              <button type="button" class="theme-switch-btn" @click="switchTheme('right')" title="Tema siguiente (→)">
+                ▶
+              </button>
+            </div>
+            <small class="theme-hint">Hotkeys: ← / →</small>
           </label>
         </div>
       </header>
 
       <article class="canvas-surface">
-        <Transition name="canvas-screen" mode="out-in">
-          <div v-if="generatedComponent" :key="screenRevision" class="canvas-content">
-          <component :is="generatedComponent" />
+        <Transition :name="themeTransitionDirection === 'left' ? 'canvas-swipe-left' : 'canvas-swipe-right'" mode="out-in">
+          <div v-if="generatedComponent" :key="themeTransitionKey" class="canvas-content">
+            <component :is="generatedComponent" />
           </div>
-          <div v-else key="empty" class="canvas-state">{{ message }}</div>
+          <div v-else :key="`empty-${activeTheme}`" class="canvas-state">{{ message }}</div>
         </Transition>
         <div v-if="isGenerating" class="canvas-status-layer">
           <div class="canvas-status-chip">
@@ -474,6 +582,54 @@ onBeforeUnmount(() => {
   padding: 0.38rem 0.56rem;
 }
 
+.theme-switch {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0.45rem;
+}
+
+.theme-switch-btn {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  width: 2rem;
+  height: 2rem;
+  background: #0e152f;
+  color: #f4f7ff;
+  cursor: pointer;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  line-height: 1;
+}
+
+.theme-switch-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.theme-current {
+  min-width: 10rem;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background: #0e152f;
+  color: #f4f7ff;
+  padding: 0.38rem 0.6rem;
+  font-size: 0.86rem;
+}
+
+.theme-switch-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.theme-hint {
+  display: block;
+  color: #aeb8db;
+  font-size: 0.75rem;
+  margin-top: 0.2rem;
+}
+
 .canvas-header p {
   margin: 0.4rem 0 0.9rem;
   color: #c8d0ff;
@@ -545,6 +701,30 @@ onBeforeUnmount(() => {
 .canvas-screen-leave-to {
   opacity: 0;
   transform: translateY(8px);
+  filter: blur(4px);
+}
+
+.canvas-swipe-right-enter-active,
+.canvas-swipe-right-leave-active,
+.canvas-swipe-left-enter-active,
+.canvas-swipe-left-leave-active {
+  transition:
+    opacity 0.24s ease,
+    transform 0.24s ease,
+    filter 0.24s ease;
+}
+
+.canvas-swipe-right-enter-from,
+.canvas-swipe-left-leave-to {
+  opacity: 0;
+  transform: translateX(24px);
+  filter: blur(4px);
+}
+
+.canvas-swipe-left-enter-from,
+.canvas-swipe-right-leave-to {
+  opacity: 0;
+  transform: translateX(-24px);
   filter: blur(4px);
 }
 
