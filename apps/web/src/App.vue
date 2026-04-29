@@ -6,8 +6,10 @@ import {
   markRaw,
   type Component,
   onBeforeUnmount,
+  onMounted,
   ref,
   type Ref,
+  watch,
 } from 'vue';
 
 import {
@@ -76,6 +78,81 @@ const generatedState: Ref<GeneratedViewState | null> = ref(null);
 const generatedComponent: Ref<Component | null> = ref(null);
 const cleanupStyle = ref<(() => void) | null>(null);
 const screenRevision = ref(0);
+const BOOTSWATCH_VERSION = '5.3.8';
+const BOOTSWATCH_LINK_ID = 'bootswatch-theme-runtime';
+const activeTheme = ref<'bootstrap' | 'cerulean' | 'cosmo' | 'darkly' | 'flatly' | 'journal' | 'litera' | 'lux' | 'lumen' | 'pulse' | 'sandstone' | 'simplex' | 'sketchy' | 'slate' | 'solar' | 'superhero' | 'united' | 'vapor' | 'yeti'>(
+  'bootstrap',
+);
+
+const themeOptions: { value: string; label: string }[] = [
+  { value: 'bootstrap', label: 'Bootstrap (default)' },
+  { value: 'cerulean', label: 'Cerulean' },
+  { value: 'cosmo', label: 'Cosmo' },
+  { value: 'darkly', label: 'Darkly' },
+  { value: 'flatly', label: 'Flatly' },
+  { value: 'journal', label: 'Journal' },
+  { value: 'litera', label: 'Litera' },
+  { value: 'lux', label: 'Lux' },
+  { value: 'lumen', label: 'Lumen' },
+  { value: 'pulse', label: 'Pulse' },
+  { value: 'sandstone', label: 'Sandstone' },
+  { value: 'simplex', label: 'Simplex' },
+  { value: 'sketchy', label: 'Sketchy' },
+  { value: 'slate', label: 'Slate' },
+  { value: 'solar', label: 'Solar' },
+  { value: 'superhero', label: 'Superhero' },
+  { value: 'united', label: 'United' },
+  { value: 'vapor', label: 'Vapor' },
+  { value: 'yeti', label: 'Yeti' },
+];
+
+function getBootswatchHref(theme: string): string | null {
+  if (!theme || theme === 'bootstrap') {
+    return null;
+  }
+  return `https://cdn.jsdelivr.net/npm/bootswatch@${BOOTSWATCH_VERSION}/dist/${theme}/bootstrap.min.css`;
+}
+
+function applyThemeRuntime(theme: string) {
+  if (typeof document === 'undefined') {
+    return;
+  }
+
+  document.documentElement.setAttribute('data-theme', theme);
+  document.body.setAttribute('data-theme', theme);
+
+  const targetHref = getBootswatchHref(theme);
+  const existing = document.getElementById(BOOTSWATCH_LINK_ID) as HTMLLinkElement | null;
+
+  if (!targetHref) {
+    if (existing) {
+      existing.remove();
+    }
+    return;
+  }
+
+  if (existing) {
+    if (existing.getAttribute('href') !== targetHref) {
+      existing.href = targetHref;
+    }
+    return;
+  }
+
+  const styleLink = document.createElement('link');
+  styleLink.id = BOOTSWATCH_LINK_ID;
+  styleLink.rel = 'stylesheet';
+  styleLink.href = targetHref;
+  styleLink.crossOrigin = 'anonymous';
+  document.head.appendChild(styleLink);
+}
+
+watch(activeTheme, (theme) => {
+  applyThemeRuntime(theme);
+});
+
+onMounted(() => {
+  applyThemeRuntime(activeTheme.value);
+});
 
 const lastUserMessageIndex = computed(() => {
   for (let i = conversation.value.length - 1; i >= 0; i -= 1) {
@@ -153,7 +230,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
     prompt,
     context: {
       locale: navigator.language || 'es-ES',
-      theme: 'light',
+      theme: activeTheme.value,
       targetDensity: 'compact',
       enabledPacks: ['advanced-inputs', 'files'],
     },
@@ -245,11 +322,23 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="builder-root">
+  <main class="builder-root" :data-theme="activeTheme">
     <section class="canvas-wrap">
       <header class="canvas-header">
-        <h1>Builder Editor</h1>
-        <p>Genera pantallas con IA y las dibuja en vivo en el canvas.</p>
+        <div class="canvas-header-top">
+          <div>
+            <h1>Builder Editor</h1>
+            <p>Genera pantallas con IA y las dibuja en vivo en el canvas.</p>
+          </div>
+          <label class="theme-control">
+            Tema
+            <select v-model="activeTheme" class="theme-select" aria-label="Selector de tema visual">
+              <option v-for="option in themeOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+        </div>
       </header>
 
       <article class="canvas-surface">
@@ -359,19 +448,45 @@ onBeforeUnmount(() => {
   font-size: 1.5rem;
 }
 
+.canvas-header-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.theme-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #e4e9ff;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.theme-select {
+  min-width: 156px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  background: #0e152f;
+  color: #f4f7ff;
+  padding: 0.38rem 0.56rem;
+}
+
 .canvas-header p {
   margin: 0.4rem 0 0.9rem;
   color: #c8d0ff;
 }
 
 .canvas-surface {
-  background: #fdfefe;
+  background: var(--bs-body-bg);
   border: 1px dashed rgba(255, 255, 255, 0.2);
   border-radius: 14px;
   min-height: calc(100vh - 14rem);
   max-height: calc(100vh - 14rem);
   overflow: auto;
-  color: #111;
+  color: var(--bs-body-color);
   position: relative;
 }
 
