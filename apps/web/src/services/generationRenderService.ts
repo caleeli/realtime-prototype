@@ -453,7 +453,10 @@ function isSlotTemplateNode(node: PugTemplateNode): node is PugTreeElementNode {
     return false;
   }
   const tag = normalizeTag(node.tag);
-  return tag === 'template' && Object.keys(node.attributes).some((name) => name.startsWith('v-slot'));
+  return (
+    tag === 'template' &&
+    Object.keys(node.attributes).some((name) => name.startsWith('v-slot') || name.startsWith('#'))
+  );
 }
 
 function getSlotName(node: PugTreeElementNode): string | null {
