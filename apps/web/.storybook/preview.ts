@@ -4,6 +4,7 @@ import type { Preview } from '@storybook/vue3';
 
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap-vue-next/dist/bootstrap-vue-next.css';
+import 'bootstrap-icons/font/bootstrap-icons.css';
 
 setup((app) => {
   app.use(createBootstrap());

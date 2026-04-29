@@ -13,3 +13,7 @@ div.login-screen
     b-button(type="submit") Login
 css must be valid plain CSS (no nested syntax, no preprocessors, no trailing commas).
 data can be an object with any example values used by the screen.
+For iconography, use Bootstrap Icons by CSS classes only, never use icon components.
+Use exactly `<i>` tags with classes `bi bi-ICON_NAME` where ICON_NAME is any Bootstrap Icons name.
+Any Bootstrap Icons identifier is allowed as long as it starts with `bi-` and uses the official Bootstrap Icons catalog.
+Do not invent custom icon components or unsupported icon libraries.
