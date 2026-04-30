@@ -174,4 +174,34 @@ export const initialComponentInventory: ComponentInventoryItem[] = [
     enabled: true,
     version: '0.9.8',
   },
+  {
+    name: 'VueChart',
+    module: 'vue-chartjs',
+    tag: 'VueChart',
+    pack: 'charts',
+    props: [
+      { name: 'chartType', type: `'line' | 'bar' | 'pie' | 'doughnut' | 'radar' | 'polarArea' | 'bubble' | 'scatter'`, required: false, defaultValue: 'line', description: 'Chart.js chart type to render.' },
+      { name: 'type', type: 'string', required: false, description: 'Alias for chartType.' },
+      { name: 'chartData', type: 'Record<string, any> | null', required: true, description: 'Data object for vue-chartjs/chart.js' },
+      { name: 'chartOptions', type: 'Record<string, any>', required: false, description: 'Options object for chart.js.' },
+      { name: 'options', type: 'Record<string, any>', required: false, description: 'Alias for chartOptions.' },
+      { name: 'width', type: 'number | string', required: false, description: 'Optional rendered chart width.' },
+      { name: 'height', type: 'number | string', required: false, description: 'Optional rendered chart height.' },
+    ],
+    slots: [],
+    events: [],
+    examples: [
+      {
+        label: 'Sales chart',
+        pug: "VueChart(chart-type='line' :chart-data='salesData' :chart-options='salesOptions')",
+        description: 'Render a line chart bound to data variables.',
+      },
+    ],
+    restrictions: [
+      { type: 'runtime', message: 'chart-data must be compatible with vue-chartjs datasets format for the selected chart-type.' },
+      { type: 'security', message: 'Avoid untrusted config objects in chartOptions and keep values JSON serializable.' },
+    ],
+    enabled: true,
+    version: '1.0.0',
+  },
 ];

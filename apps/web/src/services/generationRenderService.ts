@@ -709,29 +709,29 @@ export class GenerationRenderService {
     localComponents: Record<string, DefineComponent>;
     unresolved: string[];
   }> {
-    const unresolved: string[] = [];
+    const unresolved = new Set<string>();
     const localComponents: Record<string, DefineComponent> = {};
 
     for (const dependency of imports) {
       if (!dependency.isCatalogResolved) {
-        unresolved.push(dependency.tag);
-        continue;
+        unresolved.add(dependency.tag);
       }
 
       const component = await this.loadComponent(dependency.localName);
       if (!component) {
-        unresolved.push(dependency.tag);
+        unresolved.add(dependency.tag);
         continue;
       }
 
       localComponents[dependency.tag] = markRaw(component);
+      unresolved.delete(dependency.tag);
 
       if (this.app) {
         this.app.component(dependency.tag, component);
       }
     }
 
-    return { localComponents, unresolved };
+    return { localComponents, unresolved: Array.from(unresolved) };
   }
 
   async materializeScreen(output: GenerationPipelineResult): Promise<GeneratedScreenView> {

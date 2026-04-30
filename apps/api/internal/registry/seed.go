@@ -156,6 +156,36 @@ var initialComponentInventory = []ComponentInventoryItem{
 		Enabled: true,
 		Version: strPtr("0.9.8"),
 	},
+	{
+		Name:   "VueChart",
+		Module: "vue-chartjs",
+		Tag:    "VueChart",
+		Pack:   "charts",
+		Props: []ComponentPropMetadata{
+			{Name: "chartType", Type: "'line' | 'bar' | 'pie' | 'doughnut' | 'radar' | 'polarArea' | 'bubble' | 'scatter'", Required: false, Default: strPtr("line"), Description: strPtr("Chart.js chart type to render.")},
+			{Name: "type", Type: "string", Required: false, Description: strPtr("Alias for chartType.")},
+			{Name: "chartData", Type: "Record<string, any> | null", Required: true, Description: strPtr("Data object for vue-chartjs/chart.js")},
+			{Name: "chartOptions", Type: "Record<string, any>", Required: false, Description: strPtr("Options object for chart.js.")},
+			{Name: "options", Type: "Record<string, any>", Required: false, Description: strPtr("Alias for chartOptions.")},
+			{Name: "width", Type: "number | string", Required: false, Description: strPtr("Optional rendered chart width.")},
+			{Name: "height", Type: "number | string", Required: false, Description: strPtr("Optional rendered chart height.")},
+		},
+		Slots:  []ComponentSlotMetadata{},
+		Events: []ComponentEventMetadata{},
+		Examples: []ComponentExample{
+			{
+				Label:       "Sales chart",
+				Pug:         "VueChart(chart-type='line' :chart-data='salesData' :chart-options='salesOptions')",
+				Description: strPtr("Render a line chart bound to data variables."),
+			},
+		},
+		Restrictions: []ComponentRestriction{
+			{Type: RestrictionRuntime, Message: "chart-data must be compatible with vue-chartjs datasets format for the selected chart-type."},
+			{Type: RestrictionSecurity, Message: "Avoid untrusted config objects in chartOptions and keep values JSON serializable."},
+		},
+		Enabled: true,
+		Version: strPtr("1.0.0"),
+	},
 }
 
 func strPtr(value string) *string {

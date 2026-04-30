@@ -56,6 +56,9 @@ const componentLoaders: NonNullable<GenerationRenderOptions['componentLoaders']>
   pmTable: createFallbackComponent('pm-table'),
   'pm-table': createFallbackComponent('pm-table'),
   DropzoneUploader: createFallbackComponent('DropzoneUploader'),
+  VueChart: () => import('./components/charts/VueChart'),
+  'vue-chart': () => import('./components/charts/VueChart'),
+  Vuechart: () => import('./components/charts/VueChart'),
 };
 
 type ChatRole = 'user' | 'assistant';
@@ -330,7 +333,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
       locale: navigator.language || 'es-ES',
       theme: activeTheme.value,
       targetDensity: 'compact',
-      enabledPacks: ['advanced-inputs', 'files'],
+      enabledPacks: ['advanced-inputs', 'files', 'charts'],
     },
     messages: buildUserPayloadMessages(history),
   };
@@ -501,7 +504,7 @@ onBeforeUnmount(() => {
         :disabled="isGenerating"
       ></textarea>
       <div class="prompt-actions">
-        <button type="button" :disabled="isGenerating" @click="onGenerate">
+        <button type="button" :disabled="isGenerating" @click="onGenerate" v-b-tooltip.hover="'Generar pantalla'">
           {{ isGenerating ? 'Generando…' : '▶' }}
         </button>
         <button
@@ -887,6 +890,11 @@ onBeforeUnmount(() => {
   aspect-ratio: 1 / 1;
   border-radius: 10px;
   flex: 0 0 auto;
+}
+
+.prompt-action-generate {
+  display: block;
+  flex: 1;
 }
 
 .floating-prompt button:disabled {

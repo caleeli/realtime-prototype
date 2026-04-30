@@ -9,12 +9,15 @@ import {
   type GenerationPipelineResult,
   type PugTemplateNode,
   type PugTemplateTree,
+  type PipelineImport,
 } from './services/generationPipelineService';
+import VueChart from './components/charts/VueChart';
 
 type StoryArgs = {
   pug: string;
   css: string;
   data: Record<string, unknown>;
+  imports?: PipelineImport[];
 };
 
 function expect(condition: boolean, message: string): void {
@@ -45,7 +48,7 @@ function buildPipelineResultFromArgs(args: StoryArgs): GenerationPipelineResult 
   const template = parsePugStructure(args.pug);
   return {
     template,
-    imports: [],
+    imports: args.imports ?? [],
     css: args.css,
     data: args.data,
     sourcePug: args.pug,
@@ -71,6 +74,9 @@ const meta: Meta<StoryArgs> = {
           try {
             const view = await buildGeneratedScreen(buildPipelineResultFromArgs(args), {
               styleId: `storybook-generated-screen-${Date.now()}`,
+              componentLoaders: {
+                VueChart: () => Promise.resolve(VueChart),
+              },
             });
             generated.value = markRaw(view.component);
             storyStyles.value = view.installStyles;
@@ -143,6 +149,96 @@ const meta: Meta<StoryArgs> = {
 export const RenderDesdePugCssData: Story = {
   args: {
     ...meta.args,
+  },
+};
+
+export const BenchmarkScreen: Story = {
+  args: {
+    ...meta.args,
+    imports: [
+      {
+        tag: 'VueChart',
+        localName: 'VueChart',
+        source: 'vue-chartjs',
+        isCatalogResolved: true,
+      },
+    ],
+    pug: [
+      "div.benchmark-screen",
+      "  b-card(class='my-3')",
+      "    b-card-header",
+      "      h4",
+      "        i.bi.bi-speedometer2",
+      "        |  Benchmark Results",
+      "    b-card-body",
+      "      b-button(variant='primary' @click='loadBenchmarks')",
+      "        i.bi.bi-arrow-clockwise",
+      "        |  Refresh",
+      "      b-table(:items='benchmarks' :fields='fields' striped hover small)",
+      "      div.chart-container",
+      "        VueChart(chart-type='bar' :chart-data='chartData' :chart-options='chartOptions')",
+    ].join('\n'),
+    css: [
+      '.benchmark-screen {',
+      '  padding: 1rem;',
+      '}',
+      '.benchmark-screen .my-3 {',
+      '  box-shadow: 0 12px 24px rgba(17, 24, 39, 0.08);',
+      '}',
+      '.benchmark-screen .chart-container {',
+      '  margin-top: 1rem;',
+      '  min-height: 300px;',
+      '}',
+      '.benchmark-screen .bi {',
+      '  margin-right: 0.4rem;',
+      '}',
+    ].join('\n'),
+    data: {
+      benchmarks: [
+        { bench: 'Login render', avgMs: 126, status: 'ok' },
+        { bench: 'Dashboard', avgMs: 248, status: 'ok' },
+        { bench: 'Export', avgMs: 412, status: 'warn' },
+      ],
+      fields: [
+        { key: 'bench', label: 'Benchmark' },
+        { key: 'avgMs', label: 'Avg (ms)' },
+        { key: 'status', label: 'Status' },
+      ],
+      loadBenchmarks: () => {
+        // no-op para story
+      },
+      chartData: {
+        labels: ['Login', 'Dashboard', 'Export'],
+        datasets: [
+          {
+            label: 'Latencia (ms)',
+            data: [126, 248, 412],
+            backgroundColor: ['#3b82f6', '#f59e0b', '#ef4444'],
+          },
+        ],
+      },
+      chartOptions: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+          },
+        },
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const root = canvasElement as HTMLElement;
+    const table = root.querySelector('table');
+    if (!table) {
+      throw new Error('No se renderizó la tabla de benchmarks.');
+    }
+
+    const canvas = root.querySelector('canvas');
+    if (!canvas) {
+      throw new Error('No se renderizó el canvas del gráfico.');
+    }
   },
 };
 

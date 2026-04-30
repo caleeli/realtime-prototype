@@ -17,3 +17,9 @@ For iconography, use Bootstrap Icons by CSS classes only, never use icon compone
 Use exactly `<i>` tags with classes `bi bi-ICON_NAME` where ICON_NAME is any Bootstrap Icons name.
 Any Bootstrap Icons identifier is allowed as long as it starts with `bi-` and uses the official Bootstrap Icons catalog.
 Do not invent custom icon components or unsupported icon libraries.
+For charts, use the `VueChart` component (from vue-chartjs / Chart.js).
+Supported `chartType` values: `line`, `bar`, `pie`, `doughnut`, `radar`, `polarArea`, `bubble`, `scatter`.
+Pass data with `:chart-data` and options with `:chart-options` from named context objects.
+Example:
+div.report
+  VueChart(chart-type='line' :chart-data='chartData' :chart-options='chartOptions')
