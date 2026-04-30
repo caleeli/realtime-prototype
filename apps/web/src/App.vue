@@ -7,6 +7,7 @@ import {
   type Component,
   onBeforeUnmount,
   onMounted,
+  nextTick,
   ref,
   type Ref,
   watch,
@@ -74,6 +75,7 @@ type GeneratedViewState = {
 };
 
 const promptText: Ref<string> = ref('');
+const promptInput = ref<HTMLTextAreaElement | null>(null);
 const conversation: Ref<ChatMessage[]> = ref([]);
 const isGenerating = ref(false);
 const message = ref('Escribe una descripción y pulsa "Generar pantalla".');
@@ -389,6 +391,7 @@ async function onGenerate() {
   promptText.value = '';
   conversation.value = [...normalizeChatMessages(conversation.value), { role: 'user', content: trimmed }];
   await renderPipeline(trimmed, conversation.value);
+  focusPromptTextarea();
 }
 
 async function onRefresh(messageIndex: number) {
@@ -403,6 +406,7 @@ async function onRefresh(messageIndex: number) {
   const truncated = conversation.value.slice(0, messageIndex + 1);
   conversation.value = normalizeChatMessages(truncated);
   await renderPipeline(targetMessage.content, conversation.value);
+  focusPromptTextarea();
 }
 
 function onRollback() {
@@ -412,6 +416,13 @@ function onRollback() {
 
   conversation.value = normalizeChatMessages(conversation.value.slice(0, lastUserMessageIndex.value));
   message.value = 'Rollback aplicado. Escribe un nuevo mensaje del usuario para generar otra respuesta.';
+  focusPromptTextarea();
+}
+
+function focusPromptTextarea() {
+  nextTick(() => {
+    promptInput.value?.focus();
+  });
 }
 
 onBeforeUnmount(() => {
@@ -421,6 +432,37 @@ onBeforeUnmount(() => {
     cleanupStyle.value = null;
   }
 });
+
+function onPromptKeydown(event: KeyboardEvent) {
+  if (!(event.target instanceof HTMLTextAreaElement)) {
+    return;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'Enter') {
+    event.preventDefault();
+    if (!isGenerating.value && lastUserMessageIndex.value >= 0) {
+      onRollback();
+    }
+    return;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+    event.preventDefault();
+    if (!isGenerating.value && lastUserMessageIndex.value >= 0) {
+      onRefresh(lastUserMessageIndex.value);
+    }
+    return;
+  }
+
+  if (event.key !== 'Enter' || event.shiftKey) {
+    return;
+  }
+
+  event.preventDefault();
+  if (!isGenerating.value) {
+    onGenerate();
+  }
+}
 </script>
 
 <template>
@@ -498,32 +540,48 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <textarea
+        ref="promptInput"
         v-model="promptText"
         rows="4"
         :placeholder="promptPlaceholder"
         :disabled="isGenerating"
+        @keydown="onPromptKeydown"
       ></textarea>
       <div class="prompt-actions">
-        <button type="button" :disabled="isGenerating" @click="onGenerate" v-b-tooltip.hover="'Generar pantalla'">
-          {{ isGenerating ? 'Generando…' : '▶' }}
+        <button
+          type="button"
+          class="prompt-action-generate prompt-action-btn"
+          :disabled="isGenerating"
+          title="Generar pantalla (Enter)"
+          aria-label="Generar pantalla"
+          @click="onGenerate"
+          v-b-tooltip.hover="'Generar pantalla'"
+        >
+          <span v-if="isGenerating" class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+          <i v-else class="bi bi-play-fill" aria-hidden="true"></i>
+          <span class="visually-hidden">Generar pantalla</span>
         </button>
         <button
           type="button"
-          class="conversation-refresh"
+          class="conversation-refresh prompt-action-btn"
           :disabled="isGenerating || lastUserMessageIndex < 0"
-          title="Regenerar desde el último mensaje"
+          title="Regenerar desde el último mensaje (Ctrl + Enter)"
+          aria-label="Regenerar desde el último mensaje"
           @click="onRefresh(lastUserMessageIndex)"
         >
-          ⟳
+          <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+          <span class="visually-hidden">Regenerar desde el último mensaje</span>
         </button>
         <button
           type="button"
-          class="conversation-rollback"
+          class="conversation-rollback prompt-action-btn"
           :disabled="isGenerating || lastUserMessageIndex < 0"
-          title="Quitar último mensaje del usuario y respuestas siguientes"
+          title="Quitar último mensaje del usuario (Ctrl + Shift + Enter)"
+          aria-label="Quitar último mensaje del usuario y respuestas siguientes"
           @click="onRollback"
         >
-          ⟲
+          <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i>
+          <span class="visually-hidden">Quitar último mensaje del usuario y respuestas siguientes</span>
         </button>
       </div>
       <p class="prompt-msg">{{ message }}</p>
@@ -819,20 +877,26 @@ onBeforeUnmount(() => {
   font-size: 1.2rem;
 }
 
-.conversation-refresh {
+.prompt-action-btn {
   border: 0;
-  border-radius: 999px;
-  width: 28px;
-  height: 28px;
+  border-radius: 10px;
   background: #3a82ff;
   color: #fff;
   cursor: pointer;
   font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 
-.conversation-refresh:disabled {
+.prompt-action-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.prompt-action-btn i {
+  font-size: 1.08rem;
 }
 
 .floating-prompt textarea {
@@ -872,6 +936,7 @@ onBeforeUnmount(() => {
 
 .prompt-actions button {
   margin-top: 0;
+  width: auto;
 }
 
 .prompt-actions button:first-child {
@@ -879,22 +944,23 @@ onBeforeUnmount(() => {
 }
 
 .prompt-actions .conversation-refresh {
-  width: 44px;
-  aspect-ratio: 1 / 1;
+  width: 42px;
+  height: 42px;
   border-radius: 10px;
   flex: 0 0 auto;
 }
 
 .prompt-actions .conversation-rollback {
-  width: 44px;
-  aspect-ratio: 1 / 1;
+  width: 42px;
+  height: 42px;
   border-radius: 10px;
   flex: 0 0 auto;
 }
 
 .prompt-action-generate {
-  display: block;
+  display: inline-flex;
   flex: 1;
+  min-height: 42px;
 }
 
 .floating-prompt button:disabled {
