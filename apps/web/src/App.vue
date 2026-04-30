@@ -77,6 +77,7 @@ type GeneratedViewState = {
 const promptText: Ref<string> = ref('');
 const promptInput = ref<HTMLTextAreaElement | null>(null);
 const conversation: Ref<ChatMessage[]> = ref([]);
+const isConversationVisible = ref(false);
 const isGenerating = ref(false);
 const message = ref('Escribe una descripción y pulsa "Generar pantalla".');
 const generatedState: Ref<GeneratedViewState | null> = ref(null);
@@ -425,6 +426,10 @@ function focusPromptTextarea() {
   });
 }
 
+function toggleConversationVisibility() {
+  isConversationVisible.value = !isConversationVisible.value;
+}
+
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', isThemeHotkey);
   if (cleanupStyle.value) {
@@ -522,8 +527,21 @@ function onPromptKeydown(event: KeyboardEvent) {
     </section>
 
     <section class="floating-prompt">
-      <h2>Prompt</h2>
-      <div class="conversation-list">
+      <div class="floating-prompt-title">
+        <h2>Prompt</h2>
+        <button
+          type="button"
+          class="conversation-toggle-btn"
+          :aria-expanded="isConversationVisible"
+          aria-controls="conversation-list"
+          :title="isConversationVisible ? 'Ocultar historial' : 'Mostrar historial'"
+          :aria-label="isConversationVisible ? 'Ocultar historial de conversación' : 'Mostrar historial de conversación'"
+          @click="toggleConversationVisibility"
+        >
+          <i class="bi conversation-toggle-icon" :class="isConversationVisible ? 'bi-eye-slash' : 'bi-eye'" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div v-if="isConversationVisible" id="conversation-list" class="conversation-list">
         <div v-if="conversation.length === 0" class="conversation-empty">
           Aún no hay mensajes. Escribe uno y pulsa ▶ para comenzar.
         </div>
@@ -845,6 +863,30 @@ function onPromptKeydown(event: KeyboardEvent) {
   background: rgba(11, 15, 30, 0.75);
 }
 
+.floating-prompt-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.conversation-toggle-btn {
+  height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.conversation-toggle-icon {
+  display: inline-grid;
+  place-items: center;
+  line-height: 1;
+}
+
 .conversation-empty {
   color: #98a4c7;
   font-size: 0.85rem;
@@ -914,7 +956,6 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .floating-prompt button {
   margin-top: 0.6rem;
-  width: 100%;
   border: 0;
   border-radius: 10px;
   background: #3a82ff;
@@ -926,6 +967,19 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .floating-prompt button:hover:not(:disabled) {
   background: #5c9bff;
+}
+
+.floating-prompt .conversation-toggle-btn {
+  width: auto;
+  margin-top: 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: transparent;
+  color: #dfe7ff;
+}
+
+.floating-prompt .conversation-toggle-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .prompt-actions {
