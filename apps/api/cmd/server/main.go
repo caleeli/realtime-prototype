@@ -24,6 +24,8 @@ const cerebrasDefaultEndpoint = "https://api.cerebras.ai/v1/chat/completions"
 const cerebrasDefaultModel = "llama3.1-8b"
 const generationSystemPromptTemplatePath = "cmd/server/generation-system-prompt.txt"
 const generationSystemPromptTemplateEnv = "GENERATION_SYSTEM_PROMPT_PATH"
+const uxEvaluatorSystemPromptTemplatePath = "cmd/server/ux-evaluator.txt"
+const uxEvaluatorSystemPromptTemplateEnv = "UX_EVALUATOR_SYSTEM_PROMPT_PATH"
 const generationRepairEnabledEnv = "GENERATION_REPAIR_ENABLED"
 
 func main() {
@@ -173,6 +175,26 @@ func main() {
 		writeJSON(w, http.StatusOK, output)
 	}))
 
+	mux.HandleFunc("/api/ux-evaluator", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var input uxEvaluatorRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+			return
+		}
+
+		output, err := callCerebrasUXEvaluator(r.Context(), input)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		writePlainText(w, http.StatusOK, output)
+	}))
+
 	addr := strings.TrimSpace(os.Getenv("PORT"))
 	if addr == "" {
 		addr = ":3000"
@@ -192,6 +214,14 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		log.Printf("failed to encode JSON response: %v", err)
+	}
+}
+
+func writePlainText(w http.ResponseWriter, status int, text string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	if _, err := w.Write([]byte(text)); err != nil {
+		log.Printf("failed to write text response: %v", err)
 	}
 }
 
@@ -248,6 +278,12 @@ type generationResponse struct {
 	Data interface{} `json:"data"`
 	// Messages represent the conversation after this turn, excluding system messages.
 	Messages []cerebrasChatMessage `json:"messages,omitempty"`
+}
+
+type uxEvaluatorRequest struct {
+	Pug  string      `json:"pug"`
+	Css  string      `json:"css"`
+	Data interface{} `json:"data"`
 }
 
 type cerebrasChatMessage struct {
@@ -315,7 +351,17 @@ func callCerebrasGeneration(ctx context.Context, input generationRequest) (gener
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		jsonCandidate = ""
-		content, err := requestCerebrasContent(ctx, endpoint, model, apiKey, clientTimeout, messages)
+		content, err := requestCerebrasContent(
+			ctx,
+			endpoint,
+			model,
+			apiKey,
+			clientTimeout,
+			messages,
+			&cerebrasResponseFormat{
+				Type: "json_object",
+			},
+		)
 		if err != nil {
 			return generationResponse{}, err
 		}
@@ -362,6 +408,48 @@ func callCerebrasGeneration(ctx context.Context, input generationRequest) (gener
 	}
 
 	return generationResponse{}, fmt.Errorf("%w\n%s", lastErr, outputContent)
+}
+
+func callCerebrasUXEvaluator(ctx context.Context, input uxEvaluatorRequest) (string, error) {
+	apiKey := strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY"))
+	if apiKey == "" {
+		return "", errMissingCerebrasKey
+	}
+
+	endpoint := strings.TrimSpace(os.Getenv("CEREBRAS_API_URL"))
+	if endpoint == "" {
+		endpoint = cerebrasDefaultEndpoint
+	}
+	model := strings.TrimSpace(os.Getenv("CEREBRAS_MODEL"))
+	if model == "" {
+		model = cerebrasDefaultModel
+	}
+
+	if input.Data == nil {
+		input.Data = map[string]interface{}{}
+	}
+
+	timeoutMs := parseIntFromEnv("CEREBRAS_TIMEOUT_MS", 20000)
+	clientTimeout := time.Duration(timeoutMs) * time.Millisecond
+	messages, err := buildUxEvaluatorRequestMessages(input)
+	if err != nil {
+		return "", err
+	}
+
+	outputContent, err := requestCerebrasContent(
+		ctx,
+		endpoint,
+		model,
+		apiKey,
+		clientTimeout,
+		messages,
+		nil,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	return sanitizeUxEvaluatorText(outputContent), nil
 }
 
 func buildCerebrasRequestMessages(input generationRequest) []cerebrasChatMessage {
@@ -472,6 +560,175 @@ func buildGenerationSystemPrompt(userPrompt string, ctx *generationContext) stri
 	parts = append(parts, "User request: "+strings.TrimSpace(userPrompt))
 
 	return strings.Join(parts, " ")
+}
+
+func defaultUxEvaluatorPromptTemplate() string {
+	return `You are an expert UX Evaluator and a simulated user with strong attention to usability.
+Return only plain text, no JSON, no markdown.
+Return one observation per line.
+Use this line format:
+	[High|Medium|Low] issue - recommendation
+If no findings are identified, return exactly:
+No issues identified.
+The Pug provided uses BootstrapVue components (for example: b-form, b-form-group, b-form-input,
+b-form-select, b-button, b-form-invalid-feedback), and these tags should be interpreted as their
+corresponding interactive UI elements.
+---
+Evaluate the following screen code
+template pug:
+{{{pug}}}
+css style:
+{{{css}}}
+data example:
+{{{data}}}`
+}
+
+func sanitizeUxEvaluatorText(raw string) string {
+	cleaned := strings.TrimSpace(raw)
+	if strings.HasPrefix(cleaned, "```") {
+		cleaned = strings.TrimPrefix(cleaned, "```")
+		if idx := strings.Index(cleaned, "\n"); idx >= 0 {
+			cleaned = cleaned[idx+1:]
+		}
+		cleaned = strings.TrimSpace(cleaned)
+	}
+	cleaned = strings.TrimSpace(strings.TrimSuffix(cleaned, "```"))
+	cleaned = strings.TrimSpace(cleaned)
+	return cleaned
+}
+
+func splitPromptFile(raw string) (string, string, error) {
+	parts := strings.SplitN(raw, "---", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid prompt file: divider not found")
+	}
+
+	systemPrompt := strings.TrimSpace(parts[0])
+	templatePrompt := strings.TrimSpace(parts[1])
+	if systemPrompt == "" || templatePrompt == "" {
+		return "", "", fmt.Errorf("invalid prompt file: missing sections")
+	}
+	return systemPrompt, templatePrompt, nil
+}
+
+func loadPromptTemplateFromEnv(templatePath string, envVar string, fallback string) string {
+	resolvedPath := strings.TrimSpace(os.Getenv(envVar))
+	searchPaths := []string{}
+	if resolvedPath != "" {
+		searchPaths = append(searchPaths, resolvedPath)
+	}
+
+	searchPaths = append(searchPaths,
+		templatePath,
+		filepath.Join("apps", "api", "cmd", "server", templatePath),
+	)
+	if cwd, err := os.Getwd(); err == nil {
+		searchPaths = append(searchPaths,
+			filepath.Join(cwd, templatePath),
+			filepath.Join(cwd, "apps", "api", "cmd", "server", templatePath),
+		)
+	}
+	if executablePath, err := os.Executable(); err == nil {
+		execDir := filepath.Dir(executablePath)
+		searchPaths = append(searchPaths,
+			filepath.Join(execDir, templatePath),
+			filepath.Join(execDir, "apps", "api", "cmd", "server", templatePath),
+			filepath.Join(execDir, "cmd", "server", templatePath),
+		)
+	}
+
+	checked := map[string]struct{}{}
+	for _, path := range searchPaths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		path = filepath.Clean(path)
+		if _, exists := checked[path]; exists {
+			continue
+		}
+		checked[path] = struct{}{}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		prompt := strings.TrimSpace(string(content))
+		if prompt == "" {
+			continue
+		}
+		return prompt
+	}
+
+	if fallback != "" {
+		return strings.TrimSpace(fallback)
+	}
+	log.Printf("warning: unable to load prompt template from configured/path search; using fallback")
+	return ""
+}
+
+func loadUxEvaluatorSystemPromptTemplate() string {
+	const defaultPrompt = `You are an expert UX Evaluator.
+Return only plain text and no JSON.
+Each line must follow: [High|Medium|Low] issue - recommendation.
+If no findings, return: No issues identified.
+Treat the provided Pug as BootstrapVue template syntax. Tags such as b-form, b-form-group,
+b-form-input, b-button, and b-form-invalid-feedback represent real interactive UI controls
+and form feedback rendered by BootstrapVue.
+Do not use markdown, code blocks, or extra prose.`
+	fullPrompt := loadPromptTemplateFromEnv(
+		uxEvaluatorSystemPromptTemplatePath,
+		uxEvaluatorSystemPromptTemplateEnv,
+		defaultPrompt,
+	)
+	systemPrompt, _, err := splitPromptFile(fullPrompt)
+	if err == nil {
+		return systemPrompt
+	}
+	return defaultPrompt
+}
+
+func buildUxEvaluatorRequestMessages(input uxEvaluatorRequest) ([]cerebrasChatMessage, error) {
+	systemPrompt := strings.TrimSpace(loadUxEvaluatorSystemPromptTemplate())
+	if systemPrompt == "" {
+		return nil, fmt.Errorf("ux evaluator system prompt is empty")
+	}
+
+	uxTemplate := loadPromptTemplateFromEnv(
+		uxEvaluatorSystemPromptTemplatePath,
+		uxEvaluatorSystemPromptTemplateEnv,
+		defaultUxEvaluatorPromptTemplate(),
+	)
+	_, templatePrompt, err := splitPromptFile(uxTemplate)
+	if err != nil {
+		return nil, err
+	}
+	templatePrompt = strings.TrimSpace(templatePrompt)
+	if templatePrompt == "" {
+		return nil, fmt.Errorf("ux evaluator user template is empty")
+	}
+
+	dataJSON, err := json.Marshal(input.Data)
+	if err != nil {
+		dataJSON = []byte("{}")
+	}
+
+	renderedPrompt := strings.ReplaceAll(templatePrompt, "{{{pug}}}", input.Pug)
+	renderedPrompt = strings.ReplaceAll(renderedPrompt, "{{{css}}}", input.Css)
+	renderedPrompt = strings.ReplaceAll(renderedPrompt, "{{{data}}}", string(dataJSON))
+	if strings.TrimSpace(renderedPrompt) == "" {
+		return nil, fmt.Errorf("ux evaluator user template is empty")
+	}
+	return []cerebrasChatMessage{
+		{
+			Role:    "system",
+			Content: systemPrompt,
+		},
+		{
+			Role:    "user",
+			Content: renderedPrompt,
+		},
+	}, nil
 }
 
 func loadGenerationSystemPromptTemplate() string {
@@ -912,16 +1169,22 @@ Normalized candidate used for parsing:
 %s`, errText, rawOutput, normalizedCandidate)
 }
 
-func requestCerebrasContent(ctx context.Context, endpoint, model, apiKey string, timeout time.Duration, messages []cerebrasChatMessage) (string, error) {
+func requestCerebrasContent(
+	ctx context.Context,
+	endpoint, model, apiKey string,
+	timeout time.Duration,
+	messages []cerebrasChatMessage,
+	responseFormat *cerebrasResponseFormat,
+) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	reqBody := cerebrasChatPayload{
 		Model:    model,
 		Messages: messages,
-		ResponseFormat: &cerebrasResponseFormat{
-			Type: "json_object",
-		},
+	}
+	if responseFormat != nil {
+		reqBody.ResponseFormat = responseFormat
 	}
 
 	payload, err := json.Marshal(reqBody)

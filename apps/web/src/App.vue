@@ -15,6 +15,7 @@ import {
 
 import {
   GenerationPipelineService,
+  type UXEvaluatorResultLine,
   type GenerationMessage,
   type GenerationRequest,
 } from './services/generationPipelineService';
@@ -82,6 +83,9 @@ const isGenerating = ref(false);
 const message = ref('Escribe una descripción y pulsa "Generar pantalla".');
 const generatedState: Ref<GeneratedViewState | null> = ref(null);
 const generatedComponent: Ref<Component | null> = ref(null);
+const uxEvaluations: Ref<UXEvaluatorResultLine[]> = ref([]);
+const uxEvaluationStatus = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
+const uxEvaluationMessage = ref('');
 const cleanupStyle = ref<(() => void) | null>(null);
 const screenRevision = ref(0);
 const BOOTSWATCH_VERSION = '5.3.8';
@@ -326,6 +330,9 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
 
   isGenerating.value = true;
   message.value = 'Generando pantalla...';
+  uxEvaluations.value = [];
+  uxEvaluationStatus.value = 'idle';
+  uxEvaluationMessage.value = '';
 
   const previousStyleCleanup = cleanupStyle.value;
   const nextStyleId = `pipeline-runtime-generated-${screenRevision.value + 1}`;
@@ -350,6 +357,23 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
         ...normalizeChatMessages(history),
         { role: 'assistant', content: 'Respuesta generada por la IA.' },
       ];
+    }
+
+    uxEvaluationStatus.value = 'loading';
+    uxEvaluationMessage.value = 'Evaluando UX...';
+    try {
+      const recommendations = await pipelineService.evaluateUX({
+        pug: pipelineOutput.sourcePug,
+        css: pipelineOutput.css,
+        data: pipelineOutput.data,
+      });
+      uxEvaluations.value = recommendations;
+      uxEvaluationStatus.value = 'ready';
+      uxEvaluationMessage.value = '';
+    } catch (error) {
+      uxEvaluationStatus.value = 'error';
+      uxEvaluationMessage.value = error instanceof Error ? error.message : 'No se pudo obtener las recomendaciones UX.';
+      uxEvaluations.value = [];
     }
 
     const renderedView = await buildGeneratedScreen(pipelineOutput, {
@@ -523,6 +547,30 @@ function onPromptKeydown(event: KeyboardEvent) {
           <strong>No resueltos:</strong>
           {{ generatedState.view.unresolvedTags.join(', ') }}
         </p>
+        <div v-if="generatedState && uxEvaluationStatus !== 'idle'" class="ux-evaluator">
+          <p class="ux-evaluator-title">
+            <strong>Recomendaciones UX:</strong>
+            <span v-if="uxEvaluationStatus === 'loading'" class="ux-evaluator-status">Evaluando...</span>
+            <span v-else-if="uxEvaluationStatus === 'error'" class="ux-evaluator-status ux-evaluator-status-error"
+              >No disponible</span
+            >
+          </p>
+          <p v-if="uxEvaluationStatus === 'error' && uxEvaluationMessage" class="ux-evaluator-message">
+            {{ uxEvaluationMessage }}
+          </p>
+          <p v-else-if="uxEvaluationStatus === 'ready' && uxEvaluations.length === 0" class="ux-evaluator-message">
+            No se encontraron observaciones de UX.
+          </p>
+          <ul v-else-if="uxEvaluationStatus === 'ready' && uxEvaluations.length" class="ux-evaluator-list">
+            <li
+              v-for="(observation, observationIndex) in uxEvaluations"
+              :key="`${observationIndex}-${observation}`"
+              class="ux-evaluator-item"
+            >
+              {{ observation }}
+            </li>
+          </ul>
+        </div>
       </footer>
     </section>
 
@@ -830,6 +878,86 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .canvas-meta p {
   margin: 0.2rem 0;
+}
+
+.ux-evaluator {
+  margin-top: 0.5rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.ux-evaluator-title {
+  margin: 0;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ux-evaluator-status {
+  color: #9fd7ff;
+  font-size: 0.8rem;
+}
+
+.ux-evaluator-status-error {
+  color: #ffb4b4;
+}
+
+.ux-evaluator-message {
+  margin: 0.3rem 0 0;
+  color: #95a2c4;
+}
+
+.ux-evaluator-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.ux-evaluator-item {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.ux-evaluator-severity {
+  justify-self: start;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  font-size: 0.72rem;
+  padding: 0.12rem 0.45rem;
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.ux-evaluator-severity.severity-high {
+  color: #ffb3b3;
+  background: rgba(255, 95, 95, 0.15);
+  border-color: rgba(255, 95, 95, 0.52);
+}
+
+.ux-evaluator-severity.severity-medium {
+  color: #ffd17a;
+  background: rgba(255, 187, 82, 0.16);
+  border-color: rgba(255, 187, 82, 0.5);
+}
+
+.ux-evaluator-severity.severity-low {
+  color: #9ad5ff;
+  background: rgba(74, 161, 255, 0.16);
+  border-color: rgba(74, 161, 255, 0.5);
+}
+
+.ux-evaluator-issue {
+  margin: 0;
+  color: #e2e8ff;
+  font-weight: 700;
+}
+
+.ux-evaluator-recommendation {
+  margin: 0;
+  color: #adc2eb;
 }
 
 .floating-prompt {

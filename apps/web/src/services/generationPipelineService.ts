@@ -80,6 +80,14 @@ export interface GenerationPipelineResult {
   };
 }
 
+export type UXEvaluatorResultLine = string;
+
+export interface UXEvaluatorRequest {
+  readonly pug: string;
+  readonly css: string;
+  readonly data?: unknown;
+}
+
 export class GenerationServiceError extends Error {
   constructor(
     message: string,
@@ -92,6 +100,7 @@ export class GenerationServiceError extends Error {
 }
 
 const BASE_ENDPOINT = '/api/generation';
+const UX_EVALUATOR_ENDPOINT = '/ux-evaluator';
 
 const DEFAULT_BOOTSTRAP_VUE_TAGS = new Set<string>([
   'b-alert',
@@ -847,6 +856,26 @@ function safeParseJSON(text: string): unknown {
   }
 }
 
+function normalizeUxEvaluationText(raw: string): UXEvaluatorResultLine[] {
+  const normalized = raw.replace(/\r\n/g, '\n').trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const lines = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => line.replace(/^\s*(?:\d+[.)]|\*|[-•])\s*/u, '').trim())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 1 && /^No issues identified\.?$/i.test(lines[0])) {
+    return [];
+  }
+
+  return lines;
+}
+
 function normalizeBackendMessages(rawMessages: unknown): GenerationMessage[] {
   if (!Array.isArray(rawMessages)) {
     return [];
@@ -922,6 +951,7 @@ function isPugLike(text: string): boolean {
 export class GenerationPipelineService {
   private readonly componentCatalogClient: ComponentCatalogClient;
   private readonly endpoint: string;
+  private readonly evaluatorEndpoint: string;
   private readonly bootstrapVueTags: Set<string>;
   private readonly bootstrapVueTagsPascal: Set<string>;
   private catalogCache: ComponentInventoryItem[] | null = null;
@@ -929,6 +959,7 @@ export class GenerationPipelineService {
   constructor(private readonly options: GenerationPipelineServiceOptions = {}) {
     const baseUrl = options.baseUrl?.trim() || '/api';
     this.endpoint = `${baseUrl}/generation`;
+    this.evaluatorEndpoint = `${baseUrl}${UX_EVALUATOR_ENDPOINT}`;
     this.componentCatalogClient = options.componentCatalogClient ?? new ComponentCatalogClient({ baseUrl });
     this.bootstrapVueTags = new Set(Array.from(options.bootstrapVueTags ?? DEFAULT_BOOTSTRAP_VUE_TAGS));
     this.bootstrapVueTagsPascal = new Set(
@@ -964,10 +995,27 @@ export class GenerationPipelineService {
     return normalizeBackendResponse(parsed);
   }
 
+  private async fetchUXEvaluation(input: UXEvaluatorRequest): Promise<UXEvaluatorResultLine[]> {
+    const response = await fetch(this.evaluatorEndpoint, {
+      method: 'POST',
+      headers: buildHeaders(),
+      body: JSON.stringify(input),
+    });
+
+    const text = await response.text();
+    if (!response.ok) {
+      throw new GenerationServiceError(`UX evaluation failed with ${response.status}`, response.status, text);
+    }
+
+    return normalizeUxEvaluationText(text);
+  }
+
   async generate(input: GenerationRequest, catalog?: ComponentInventoryItem[]): Promise<GenerationPipelineResult> {
     const output = await this.fetchGeneration(input);
     const sourcePug = output.pug;
-    const template = isPugLike(sourcePug) ? parsePugToHierarchy(sourcePug) : { type: 'root', children: [] };
+    const template: PugTemplateTree = isPugLike(sourcePug)
+      ? parsePugToHierarchy(sourcePug)
+      : { type: 'root', children: [] };
 
     const inventory = catalog ?? (await this.fetchEnabledCatalog());
     const resolved = resolveImports(template, inventory, this.bootstrapVueTags, this.bootstrapVueTagsPascal);
@@ -985,6 +1033,10 @@ export class GenerationPipelineService {
         unresolvedTags: resolved.unresolvedTags,
       },
     };
+  }
+
+  async evaluateUX(input: UXEvaluatorRequest): Promise<UXEvaluatorResultLine[]> {
+    return this.fetchUXEvaluation(input);
   }
 }
 

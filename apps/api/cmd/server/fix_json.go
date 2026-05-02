@@ -11,7 +11,6 @@ import (
 
 func FixComponentJSON(input string) (map[string]any, error) {
 	source := stripCodeFence(strings.TrimSpace(input))
-	source = normalizeEscapedObjectKeys(source)
 
 	var parsed map[string]any
 
@@ -22,6 +21,8 @@ func FixComponentJSON(input string) (map[string]any, error) {
 
 		return parsed, nil
 	}
+
+	source = normalizeEscapedObjectKeys(source)
 
 	repaired, err := repairKnownStringFields(source, []string{"pug", "css"})
 	if err != nil {
