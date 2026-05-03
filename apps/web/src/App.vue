@@ -75,6 +75,15 @@ type GeneratedViewState = {
   component: Component;
 };
 
+type UXRecommendationSeverity = 'high' | 'medium' | 'low';
+
+interface UXRecommendationBubble {
+  id: string;
+  severity: UXRecommendationSeverity;
+  text: string;
+  requestText: string;
+}
+
 const promptText: Ref<string> = ref('');
 const promptInput = ref<HTMLTextAreaElement | null>(null);
 const conversation: Ref<ChatMessage[]> = ref([]);
@@ -84,6 +93,7 @@ const message = ref('Escribe una descripción y pulsa "Generar pantalla".');
 const generatedState: Ref<GeneratedViewState | null> = ref(null);
 const generatedComponent: Ref<Component | null> = ref(null);
 const uxEvaluations: Ref<UXEvaluatorResultLine[]> = ref([]);
+const explodingBubbleId = ref<string | null>(null);
 const uxEvaluationStatus = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
 const uxEvaluationMessage = ref('');
 const cleanupStyle = ref<(() => void) | null>(null);
@@ -318,6 +328,49 @@ function syncConversationFromBackend(messages: GenerationMessage[]) {
   conversation.value = normalized;
 }
 
+function parseUxRecommendation(observation: string) {
+  const trimmed = observation.trim();
+  const match = trimmed.match(/^\s*\[?\s*(high|medium|low)\s*\]?\s*(?:-|:)?\s*(.*)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const severity = match[1].toLowerCase() as UXRecommendationSeverity;
+  const payload = match[2].trim();
+  if (!payload) {
+    return null;
+  }
+
+  const separatorIndex = payload.indexOf(' - ');
+  const recommendation =
+    separatorIndex >= 0 ? payload.slice(separatorIndex + 3).trim() : payload;
+
+  return {
+    severity,
+    text: payload,
+    requestText:
+      `Aplica esta recomendación UX (${severity.toUpperCase()}): ${recommendation || payload}`,
+  };
+}
+
+const actionableUxRecommendations = computed<UXRecommendationBubble[]>(() => {
+  return uxEvaluations.value
+    .map((observation, index): UXRecommendationBubble | null => {
+      const parsed = parseUxRecommendation(observation);
+      if (!parsed || (parsed.severity !== 'high' && parsed.severity !== 'medium')) {
+        return null;
+      }
+
+      return {
+        id: `recommendation-${parsed.severity}-${index}`,
+        severity: parsed.severity,
+        text: parsed.text,
+        requestText: parsed.requestText,
+      };
+    })
+    .filter((entry): entry is UXRecommendationBubble => entry !== null);
+});
+
 function buildUserPayloadMessages(history: ChatMessage[]): GenerationMessage[] {
   return toApiMessages(history);
 }
@@ -413,11 +466,40 @@ async function onGenerate() {
     return;
   }
 
+  await runGenerationFromPrompt(trimmed);
+}
+
+async function runGenerationFromPrompt(prompt: string) {
+  const normalizedPrompt = prompt.trim();
+  if (!normalizedPrompt || isGenerating.value) {
+    if (!normalizedPrompt) {
+      message.value = 'El prompt no puede estar vacío.';
+    }
+    return;
+  }
+
+  conversation.value = [...normalizeChatMessages(conversation.value), { role: 'user', content: normalizedPrompt }];
   promptText.value = '';
-  conversation.value = [...normalizeChatMessages(conversation.value), { role: 'user', content: trimmed }];
-  await renderPipeline(trimmed, conversation.value);
+  await renderPipeline(normalizedPrompt, conversation.value);
   focusPromptTextarea();
 }
+
+async function onUxSuggestionClick(suggestion: UXRecommendationBubble) {
+  if (isGenerating.value) {
+    return;
+  }
+
+  const bubbleId = suggestion.id;
+  explodingBubbleId.value = bubbleId;
+  setTimeout(() => {
+    if (explodingBubbleId.value === bubbleId) {
+      explodingBubbleId.value = null;
+    }
+  }, 420);
+
+  await runGenerationFromPrompt(suggestion.requestText);
+}
+
 
 async function onRefresh(messageIndex: number) {
   if (isGenerating.value || messageIndex !== lastUserMessageIndex.value) {
@@ -604,6 +686,26 @@ function onPromptKeydown(event: KeyboardEvent) {
             <span v-else class="assistant-icon">📟</span>
           </div>
         </div>
+      </div>
+      <div v-if="actionableUxRecommendations.length > 0" class="ux-recommendation-bubbles">
+        <button
+          v-for="suggestion in actionableUxRecommendations"
+          :key="suggestion.id"
+          type="button"
+          class="ux-recommendation-bubble"
+          :class="{
+            'ux-recommendation-bubble--high': suggestion.severity === 'high',
+            'ux-recommendation-bubble--medium': suggestion.severity === 'medium',
+            'ux-recommendation-bubble--burst': explodingBubbleId === suggestion.id,
+          }"
+          :title="`Aplicar sugerencia ${suggestion.text}`"
+          @click="onUxSuggestionClick(suggestion)"
+        >
+          <span class="ux-recommendation-severity">
+            {{ suggestion.severity.toUpperCase() }}
+          </span>
+          <span class="ux-recommendation-text">{{ suggestion.text }}</span>
+        </button>
       </div>
       <textarea
         ref="promptInput"
@@ -908,6 +1010,104 @@ function onPromptKeydown(event: KeyboardEvent) {
   color: #95a2c4;
 }
 
+.ux-recommendation-bubbles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.7rem;
+}
+
+.ux-recommendation-bubble {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.45rem 0.62rem;
+  color: #f4f7ff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  max-width: 100%;
+  text-align: left;
+  background: rgba(15, 23, 54, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.22);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.ux-recommendation-bubble:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.35);
+}
+
+.ux-recommendation-bubble:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 2px;
+}
+
+.ux-recommendation-bubble--high {
+  border-color: rgba(255, 118, 118, 0.58);
+  background: rgba(87, 22, 22, 0.55);
+}
+
+.ux-recommendation-bubble--medium {
+  border-color: rgba(240, 180, 42, 0.58);
+  background: rgba(83, 55, 5, 0.45);
+}
+
+.ux-recommendation-bubble--high .ux-recommendation-severity {
+  color: #ffcdcd;
+  background: rgba(255, 95, 95, 0.2);
+  border-color: rgba(255, 145, 145, 0.58);
+}
+
+.ux-recommendation-bubble--medium .ux-recommendation-severity {
+  color: #ffdfaf;
+  background: rgba(255, 188, 64, 0.2);
+  border-color: rgba(255, 205, 104, 0.58);
+}
+
+.ux-recommendation-severity {
+  text-transform: uppercase;
+  font-size: 0.66rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  padding: 0.08rem 0.34rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.ux-recommendation-text {
+  font-size: 0.78rem;
+  color: #f7f9ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ux-recommendation-bubble--burst {
+  animation: ux-bubble-pop 0.38s cubic-bezier(0.15, 1.1, 0.3, 1) forwards;
+}
+
+@keyframes ux-bubble-pop {
+  0% {
+    transform: scale(1);
+  }
+  20% {
+    transform: scale(1.07);
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.45);
+  }
+  60% {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 10px rgba(255, 255, 255, 0);
+  }
+  100% {
+    transform: scale(0.92);
+    opacity: 0.35;
+  }
+}
+
 .ux-evaluator-list {
   margin: 0.5rem 0 0;
   padding-left: 1.2rem;
@@ -962,6 +1162,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .floating-prompt {
   position: fixed;
+  z-index: 1000;
   right: 1.4rem;
   bottom: 1.4rem;
   width: min(420px, calc(100vw - 2.8rem));
