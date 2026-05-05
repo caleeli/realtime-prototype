@@ -1,0 +1,17 @@
+login screen for processmaker
+
+div.login-screen.d-flex.flex-column.align-items-center.justify-content-center.p-4
+  .inspiration.inspiration-logo.mb-3(role='presentation')
+  h2.mb-4 {{title}}
+  b-form(@submit.prevent='onSubmit' class='w-100' style='max-width: 320px;')
+    b-form-group(label-for='username' label='')
+      b-form-input(id='username' v-model='form.username' :placeholder='$t("Username")' autocomplete='username' required)
+    b-form-group(label-for='password' label='' class='position-relative')
+      b-form-input(id='password' v-model='form.password' :type='showPassword ? "text" : "password"' :placeholder='$t("Password")' autocomplete='current-password' required class='pr-5')
+      button(type='button' class='btn btn-link password-toggle position-absolute' @click='showPassword = !showPassword' :aria-label='showPassword ? $t("Hide password") : $t("Show password")' style='top: 50%; right: 0.75rem; transform: translateY(-50%);')
+        i.bi(:class='showPassword ? "bi-eye-slash" : "bi-eye"')
+    b-button(type='submit' variant='primary' class='w-100 mb-3') {{buttonLabel}}
+  a.href='#' class='forgot-password-link' {{forgotText}}
+
+
+apps/api/cache/inspiration/images/27f46857150704c3f5c7fa128c9cc5009c1c098252612b9b9f7b150cb5df0f27.png
