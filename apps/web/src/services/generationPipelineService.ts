@@ -20,6 +20,16 @@ export interface GenerationRequest {
   messages?: GenerationMessage[];
 }
 
+export interface InspirationRequest extends GenerationRequest {
+  imagePrompt?: string;
+  imageModel?: string;
+  imageSize?: string;
+  imageQuality?: string;
+  imageStyle?: string;
+  visionModel?: string;
+  conversionNotes?: string;
+}
+
 interface BackendGenerationPayload {
   prompt?: string;
   pug?: string;
@@ -100,7 +110,11 @@ export class GenerationServiceError extends Error {
 }
 
 const BASE_ENDPOINT = '/api/generation';
+const BASE_INSPIRATION_ENDPOINT = '/inspiration';
 const UX_EVALUATOR_ENDPOINT = '/ux-evaluator';
+const DEFAULT_GENERATION_TIMEOUT_MS = readFrontendTimeoutEnv('VITE_GENERATION_TIMEOUT_MS', 30000);
+const DEFAULT_INSPIRATION_TIMEOUT_MS = readFrontendTimeoutEnv('VITE_INSPIRATION_TIMEOUT_MS', 120000);
+const DEFAULT_EVALUATOR_TIMEOUT_MS = readFrontendTimeoutEnv('VITE_EVALUATOR_TIMEOUT_MS', 30000);
 
 const DEFAULT_BOOTSTRAP_VUE_TAGS = new Set<string>([
   'b-alert',
@@ -286,6 +300,21 @@ export interface GenerationPipelineServiceOptions {
   componentCatalogClient?: ComponentCatalogClient;
   bootstrapVueTags?: Iterable<string>;
   bootstrapVueTagsPascal?: Iterable<string>;
+  generationTimeoutMs?: number;
+  inspirationTimeoutMs?: number;
+  evaluatorTimeoutMs?: number;
+}
+
+function readFrontendTimeoutEnv(envKey: string, fallback: number): number {
+  const envValue = (import.meta.env as Record<string, string | undefined>)[envKey]?.trim();
+  if (!envValue) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(envValue, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
 }
 
 function buildHeaders(): Record<string, string> {
@@ -468,7 +497,7 @@ function parseAttributes(raw: string): ParsedAttributeResult {
 
       const idx = token.indexOf('=');
       if (idx === -1) {
-        if (/^[a-zA-Z_:][\w:.-]*$/.test(token)) {
+      if (/^[#]?[a-zA-Z_:][\w:.-]*$/.test(token) || token.startsWith('#')) {
           attrs[token] = true;
         } else {
           looseText.push(token);
@@ -951,7 +980,11 @@ function isPugLike(text: string): boolean {
 export class GenerationPipelineService {
   private readonly componentCatalogClient: ComponentCatalogClient;
   private readonly endpoint: string;
+  private readonly inspirationEndpoint: string;
   private readonly evaluatorEndpoint: string;
+  private readonly generationTimeoutMs: number;
+  private readonly inspirationTimeoutMs: number;
+  private readonly evaluatorTimeoutMs: number;
   private readonly bootstrapVueTags: Set<string>;
   private readonly bootstrapVueTagsPascal: Set<string>;
   private catalogCache: ComponentInventoryItem[] | null = null;
@@ -959,12 +992,43 @@ export class GenerationPipelineService {
   constructor(private readonly options: GenerationPipelineServiceOptions = {}) {
     const baseUrl = options.baseUrl?.trim() || '/api';
     this.endpoint = `${baseUrl}/generation`;
+    this.inspirationEndpoint = `${baseUrl}${BASE_INSPIRATION_ENDPOINT}`;
     this.evaluatorEndpoint = `${baseUrl}${UX_EVALUATOR_ENDPOINT}`;
+    this.generationTimeoutMs = options.generationTimeoutMs ?? DEFAULT_GENERATION_TIMEOUT_MS;
+    this.inspirationTimeoutMs = options.inspirationTimeoutMs ?? DEFAULT_INSPIRATION_TIMEOUT_MS;
+    this.evaluatorTimeoutMs = options.evaluatorTimeoutMs ?? DEFAULT_EVALUATOR_TIMEOUT_MS;
     this.componentCatalogClient = options.componentCatalogClient ?? new ComponentCatalogClient({ baseUrl });
     this.bootstrapVueTags = new Set(Array.from(options.bootstrapVueTags ?? DEFAULT_BOOTSTRAP_VUE_TAGS));
     this.bootstrapVueTagsPascal = new Set(
       Array.from(options.bootstrapVueTagsPascal ?? DEFAULT_BOOTSTRAP_VUE_TAGS_PASCAL),
     );
+  }
+
+  private async fetchWithTimeout(
+    url: string,
+    init: RequestInit,
+    timeoutMs: number,
+    timeoutLabel: string,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+      return response;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new GenerationServiceError(`${timeoutLabel} request timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
   }
 
   private async fetchEnabledCatalog(): Promise<ComponentInventoryItem[]> {
@@ -980,11 +1044,16 @@ export class GenerationPipelineService {
   private async fetchGeneration(
     input: GenerationRequest,
   ): Promise<{ pug: string; css: string; data: unknown; messages: GenerationMessage[] }> {
-    const response = await fetch(this.endpoint, {
-      method: 'POST',
-      headers: buildHeaders(),
-      body: JSON.stringify(input),
-    });
+    const response = await this.fetchWithTimeout(
+      this.endpoint,
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: JSON.stringify(input),
+      },
+      this.generationTimeoutMs,
+      'Generation',
+    );
 
     const body = await response.text();
     if (!response.ok) {
@@ -995,12 +1064,40 @@ export class GenerationPipelineService {
     return normalizeBackendResponse(parsed);
   }
 
+  private async fetchInspiration(
+    input: InspirationRequest,
+  ): Promise<{ pug: string; css: string; data: unknown; messages: GenerationMessage[] }> {
+    const response = await this.fetchWithTimeout(
+      this.inspirationEndpoint,
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: JSON.stringify(input),
+      },
+      this.inspirationTimeoutMs,
+      'Inspiration',
+    );
+
+    const body = await response.text();
+    if (!response.ok) {
+      throw new GenerationServiceError(`Inspiration failed with ${response.status}`, response.status, body);
+    }
+
+    const parsed = safeParseJSON(body);
+    return normalizeBackendResponse(parsed);
+  }
+
   private async fetchUXEvaluation(input: UXEvaluatorRequest): Promise<UXEvaluatorResultLine[]> {
-    const response = await fetch(this.evaluatorEndpoint, {
-      method: 'POST',
-      headers: buildHeaders(),
-      body: JSON.stringify(input),
-    });
+    const response = await this.fetchWithTimeout(
+      this.evaluatorEndpoint,
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: JSON.stringify(input),
+      },
+      this.evaluatorTimeoutMs,
+      'UX evaluation',
+    );
 
     const text = await response.text();
     if (!response.ok) {
@@ -1012,6 +1109,21 @@ export class GenerationPipelineService {
 
   async generate(input: GenerationRequest, catalog?: ComponentInventoryItem[]): Promise<GenerationPipelineResult> {
     const output = await this.fetchGeneration(input);
+    return this.renderPipelineOutput(output, catalog);
+  }
+
+  async generateFromInspiration(
+    input: InspirationRequest,
+    catalog?: ComponentInventoryItem[],
+  ): Promise<GenerationPipelineResult> {
+    const output = await this.fetchInspiration(input);
+    return this.renderPipelineOutput(output, catalog);
+  }
+
+  private async renderPipelineOutput(
+    output: { pug: string; css: string; data: unknown; messages: GenerationMessage[] },
+    catalog?: ComponentInventoryItem[],
+  ): Promise<GenerationPipelineResult> {
     const sourcePug = output.pug;
     const template: PugTemplateTree = isPugLike(sourcePug)
       ? parsePugToHierarchy(sourcePug)

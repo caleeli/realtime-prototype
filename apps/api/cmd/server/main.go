@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"crypto/sha256"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,11 +26,51 @@ import (
 
 const cerebrasDefaultEndpoint = "https://api.cerebras.ai/v1/chat/completions"
 const cerebrasDefaultModel = "llama3.1-8b"
+const inspirationImageDefaultOpenAIEndpoint = "https://api.openai.com/v1/images/generations"
+const inspirationImageDefaultGoogleEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict"
+const inspirationImageDefaultOpenAIModel = "gpt-image-1"
+const inspirationImageDefaultGoogleModel = "imagen-4.0-generate-001"
+const inspirationVisionDefaultOpenAIEndpoint = "https://api.openai.com/v1/responses"
+const inspirationVisionDefaultGoogleEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+const inspirationVisionDefaultOpenAIModel = "gpt-4.1-mini"
+const inspirationVisionDefaultGoogleModel = "gemini-2.5-flash"
 const generationSystemPromptTemplatePath = "cmd/server/generation-system-prompt.txt"
 const generationSystemPromptTemplateEnv = "GENERATION_SYSTEM_PROMPT_PATH"
 const uxEvaluatorSystemPromptTemplatePath = "cmd/server/ux-evaluator.txt"
 const uxEvaluatorSystemPromptTemplateEnv = "UX_EVALUATOR_SYSTEM_PROMPT_PATH"
+const inspirationConversionPromptTemplatePath = "cmd/server/inspiration-conversion-prompt.txt"
+const inspirationConversionPromptTemplateEnv = "INSPIRATION_CONVERSION_PROMPT_PATH"
 const generationRepairEnabledEnv = "GENERATION_REPAIR_ENABLED"
+const inspirationImageProviderEnv = "INSPIRATION_IMAGE_PROVIDER"
+const inspirationVisionProviderEnv = "INSPIRATION_VISION_PROVIDER"
+const inspirationOpenAIImageAPIURL = "INSPIRATION_OPENAI_IMAGE_API_URL"
+const inspirationOpenAIImageModelEnv = "INSPIRATION_OPENAI_IMAGE_MODEL"
+const inspirationOpenAIImageSizeEnv = "INSPIRATION_OPENAI_IMAGE_SIZE"
+const inspirationOpenAIImageQualityEnv = "INSPIRATION_OPENAI_IMAGE_QUALITY"
+const inspirationOpenAIImageStyleEnv = "INSPIRATION_OPENAI_IMAGE_STYLE"
+const inspirationOpenAIImageTimeoutEnv = "INSPIRATION_OPENAI_IMAGE_TIMEOUT_MS"
+const inspirationOpenAIImageNEnv = "INSPIRATION_OPENAI_IMAGE_N"
+const inspirationOpenAIImageAPIKeyEnv = "INSPIRATION_OPENAI_IMAGE_API_KEY"
+const inspirationOpenAIVisionAPIURL = "INSPIRATION_OPENAI_VISION_API_URL"
+const inspirationOpenAIVisionModelEnv = "INSPIRATION_OPENAI_VISION_MODEL"
+const inspirationOpenAIVisionTimeoutEnv = "INSPIRATION_OPENAI_VISION_TIMEOUT_MS"
+const inspirationOpenAIVisionAPIKeyEnv = "INSPIRATION_OPENAI_VISION_API_KEY"
+const inspirationGoogleImageAPIURL = "INSPIRATION_GOOGLE_IMAGE_API_URL"
+const inspirationGoogleImageModelEnv = "INSPIRATION_GOOGLE_IMAGE_MODEL"
+const inspirationGoogleImageSizeEnv = "INSPIRATION_GOOGLE_IMAGE_SIZE"
+const inspirationGoogleImageAspectRatioEnv = "INSPIRATION_GOOGLE_IMAGE_ASPECT_RATIO"
+const inspirationGoogleImageTimeoutEnv = "INSPIRATION_GOOGLE_IMAGE_TIMEOUT_MS"
+const inspirationGoogleImageNEnv = "INSPIRATION_GOOGLE_IMAGE_N"
+const inspirationGoogleImageAPIKeyEnv = "INSPIRATION_GOOGLE_IMAGE_API_KEY"
+const inspirationGoogleVisionAPIURL = "INSPIRATION_GOOGLE_VISION_API_URL"
+const inspirationGoogleVisionModelEnv = "INSPIRATION_GOOGLE_VISION_MODEL"
+const inspirationGoogleVisionTimeoutEnv = "INSPIRATION_GOOGLE_VISION_TIMEOUT_MS"
+const inspirationGoogleVisionAPIKeyEnv = "INSPIRATION_GOOGLE_VISION_API_KEY"
+const inspirationImageCacheEnabledEnv = "INSPIRATION_IMAGE_CACHE_ENABLED"
+const inspirationImageCacheDirEnv = "INSPIRATION_IMAGE_CACHE_DIR"
+const inspirationImageCacheDefaultDir = "cache/inspiration/images"
+const inspirationImageProviderGoogle = "google"
+const inspirationImageProviderOpenAI = "openai"
 
 func main() {
 	loadEnvFile(".env")
@@ -175,6 +219,29 @@ func main() {
 		writeJSON(w, http.StatusOK, output)
 	}))
 
+	inspirationHandler := withCORS(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var input inspirationRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+			return
+		}
+
+		output, err := callImageInspiration(r.Context(), input)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, output)
+	})
+	mux.HandleFunc("/api/inspiration", inspirationHandler)
+	mux.HandleFunc("/api/inspiracion", inspirationHandler)
+
 	mux.HandleFunc("/api/ux-evaluator", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -204,6 +271,7 @@ func main() {
 	}
 	log.Printf("component registry API listening on %s", addr)
 	log.Printf("generation service listening on %s", addr)
+	log.Printf("inspiration service listening on %s", addr)
 	if err := http.ListenAndServe(addr, muxWithCORS(mux)); err != nil {
 		log.Fatal(err)
 	}
@@ -270,6 +338,19 @@ type generationRequest struct {
 	Prompt   string                `json:"prompt"`
 	Context  *generationContext    `json:"context"`
 	Messages []cerebrasChatMessage `json:"messages"`
+}
+
+type inspirationRequest struct {
+	Prompt          string                `json:"prompt"`
+	Context         *generationContext    `json:"context"`
+	ImagePrompt     string                `json:"imagePrompt"`
+	ImageModel      string                `json:"imageModel"`
+	ImageSize       string                `json:"imageSize"`
+	ImageQuality    string                `json:"imageQuality"`
+	ImageStyle      string                `json:"imageStyle"`
+	VisionModel     string                `json:"visionModel"`
+	Messages        []cerebrasChatMessage `json:"messages"`
+	ConversionNotes string                `json:"conversionNotes"`
 }
 
 type generationResponse struct {
@@ -408,6 +489,1093 @@ func callCerebrasGeneration(ctx context.Context, input generationRequest) (gener
 	}
 
 	return generationResponse{}, fmt.Errorf("%w\n%s", lastErr, outputContent)
+}
+
+func callImageInspiration(ctx context.Context, input inspirationRequest) (generationResponse, error) {
+	imagePrompt := strings.TrimSpace(input.ImagePrompt)
+	if imagePrompt == "" {
+		imagePrompt = strings.TrimSpace(input.Prompt)
+	}
+	imagePrompt = strings.TrimSpace(imagePrompt)
+	if imagePrompt == "" {
+		return generationResponse{}, errors.New("prompt is required")
+	}
+
+	imageProvider := normalizeInspirationProvider(
+		strings.TrimSpace(os.Getenv(inspirationImageProviderEnv)),
+		"",
+		strings.TrimSpace(input.ImageModel),
+	)
+
+	imageTimeoutMs := parseIntFromEnv(
+		inspirationImageProviderEnvVar(imageProvider, "TIMEOUT_MS"),
+		30000,
+	)
+	imageTimeout := time.Duration(imageTimeoutMs) * time.Millisecond
+	imageEndpoint := strings.TrimSpace(os.Getenv(inspirationImageProviderEnvVar(imageProvider, "API_URL")))
+	if imageEndpoint == "" {
+		imageEndpoint = inspirationImageDefaultEndpoint(imageProvider)
+	}
+
+	imageModel := strings.TrimSpace(input.ImageModel)
+	if imageModel == "" {
+		imageModel = strings.TrimSpace(os.Getenv(inspirationImageProviderEnvVar(imageProvider, "MODEL")))
+	}
+	if imageModel == "" {
+		imageModel = inspirationImageDefaultModel(imageProvider)
+	}
+
+	imageProvider = normalizeInspirationProvider(
+		strings.TrimSpace(os.Getenv(inspirationImageProviderEnv)),
+		imageEndpoint,
+		imageModel,
+	)
+
+	imageSize := strings.TrimSpace(input.ImageSize)
+	if imageSize == "" {
+		imageSize = strings.TrimSpace(os.Getenv(inspirationImageProviderEnvVar(imageProvider, "ASPECT_RATIO")))
+	}
+	if imageSize == "" {
+		imageSize = strings.TrimSpace(os.Getenv(inspirationImageProviderEnvVar(imageProvider, "SIZE")))
+	}
+	if imageSize == "" {
+		imageSize = "1024x1024"
+	}
+
+	imageQuality := strings.TrimSpace(input.ImageQuality)
+	if imageQuality == "" {
+		imageQuality = strings.TrimSpace(os.Getenv(inspirationImageProviderEnvVar(imageProvider, "QUALITY")))
+	}
+	if imageQuality == "" {
+		imageQuality = ""
+	}
+	imageStyle := strings.TrimSpace(input.ImageStyle)
+	if imageStyle == "" {
+		imageStyle = strings.TrimSpace(os.Getenv(inspirationImageProviderEnvVar(imageProvider, "STYLE")))
+	}
+	if imageStyle == "" {
+		imageStyle = ""
+	}
+
+	imageCount := parseIntFromEnv(
+		inspirationImageProviderEnvVar(imageProvider, "N"),
+		1,
+	)
+	if imageCount < 1 {
+		imageCount = 1
+	}
+	if imageCount > 4 {
+		imageCount = 4
+	}
+
+	imageCacheEnabled := parseBoolFromEnv(inspirationImageCacheEnabledEnv, true)
+	imageCacheDir := strings.TrimSpace(os.Getenv(inspirationImageCacheDirEnv))
+	if imageCacheDir == "" {
+		imageCacheDir = inspirationImageCacheDefaultDir
+	}
+	imageCacheKey := inspirationImageCacheKey(
+		imageEndpoint,
+		imageModel,
+		imageProvider,
+		imagePrompt,
+		imageSize,
+		imageQuality,
+		imageStyle,
+		fmt.Sprint(imageCount),
+	)
+	imageCachePath := inspirationImageCachePath(imageCacheDir, imageCacheKey)
+
+	imageKey := strings.TrimSpace(os.Getenv(inspirationImageProviderEnvVar(imageProvider, "API_KEY")))
+	if imageKey == "" {
+		imageKey = strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY"))
+	}
+	if imageKey == "" {
+		return generationResponse{}, fmt.Errorf("missing image API key for %s provider (set %s)", imageProvider, inspirationImageProviderEnvVar(imageProvider, "API_KEY"))
+	}
+
+	var imageBase64 string
+	var err error
+	if imageCacheEnabled {
+		cachedImageBase64, cacheErr := loadImageInspirationCache(imageCachePath)
+		if cacheErr != nil {
+			log.Printf("inspiration image cache read error for %s: %v", imageCachePath, cacheErr)
+		} else if cachedImageBase64 != "" {
+			imageBase64 = cachedImageBase64
+		}
+	}
+
+	if imageBase64 == "" {
+		imageBase64, err = callImageGeneration(
+			ctx,
+			imageEndpoint,
+			imageModel,
+			imageProvider,
+			imageKey,
+			imageTimeout,
+			imagePrompt,
+			imageSize,
+			imageQuality,
+			imageStyle,
+			imageCount,
+		)
+		if err != nil {
+			return generationResponse{}, err
+		}
+		if imageCacheEnabled {
+			if cacheErr := saveImageInspirationCache(imageCachePath, imageBase64); cacheErr != nil {
+				log.Printf("inspiration image cache write error for %s: %v", imageCachePath, cacheErr)
+			}
+		}
+	} else {
+		log.Printf("inspiration image cache hit: %s", imageCachePath)
+	}
+
+	visionProvider := normalizeInspirationProvider(
+		strings.TrimSpace(os.Getenv(inspirationVisionProviderEnv)),
+		"",
+		strings.TrimSpace(input.VisionModel),
+	)
+
+	visionTimeoutMs := parseIntFromEnv(
+		inspirationVisionProviderEnvVar(visionProvider, "TIMEOUT_MS"),
+		30000,
+	)
+	visionTimeout := time.Duration(visionTimeoutMs) * time.Millisecond
+	visionEndpoint := strings.TrimSpace(os.Getenv(inspirationVisionProviderEnvVar(visionProvider, "API_URL")))
+	if visionEndpoint == "" {
+		visionEndpoint = inspirationVisionDefaultEndpoint(visionProvider)
+	}
+
+	visionModel := strings.TrimSpace(input.VisionModel)
+	if visionModel == "" {
+		visionModel = strings.TrimSpace(os.Getenv(inspirationVisionProviderEnvVar(visionProvider, "MODEL")))
+	}
+	if visionModel == "" {
+		visionModel = inspirationVisionDefaultModel(visionProvider)
+	}
+
+	visionProvider = normalizeInspirationProvider(
+		strings.TrimSpace(os.Getenv(inspirationVisionProviderEnv)),
+		visionEndpoint,
+		visionModel,
+	)
+
+	visionKey := strings.TrimSpace(os.Getenv(inspirationVisionProviderEnvVar(visionProvider, "API_KEY")))
+	if visionKey == "" {
+		visionKey = strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY"))
+	}
+	if visionKey == "" {
+		return generationResponse{}, fmt.Errorf("missing vision API key for %s provider (set %s)", visionProvider, inspirationVisionProviderEnvVar(visionProvider, "API_KEY"))
+	}
+
+	conversionPrompt := strings.TrimSpace(input.ConversionNotes)
+	if conversionPrompt == "" {
+		conversionPrompt = buildInspirationConversionPrompt(input.Context)
+	}
+
+	visionContent, err := callVisionToCode(
+		ctx,
+		visionEndpoint,
+		visionModel,
+		visionProvider,
+		visionKey,
+		visionTimeout,
+		conversionPrompt,
+		imageBase64,
+		imagePrompt,
+	)
+	if err != nil {
+		return generationResponse{}, err
+	}
+
+	var output generationResponse
+	jsonCandidate, err := extractJSONFromText(visionContent)
+	if err != nil {
+		return generationResponse{}, fmt.Errorf("vision model output is not JSON: %w", err)
+	}
+	decodedCandidate := normalizeGeneratedJSONCandidate(jsonCandidate)
+	if err := parseGenerationJSONCandidate(decodedCandidate, &output); err != nil {
+		return generationResponse{}, err
+	}
+
+	output = sanitizeGenerationResponse(output)
+	if err := validateGenerationResponse(&output); err != nil {
+		return generationResponse{}, fmt.Errorf("invalid generated output: %w", err)
+	}
+	output.Messages = appendConversationMessagesForResponse(
+		[]cerebrasChatMessage{
+			{
+				Role:    "user",
+				Content: strings.TrimSpace(input.Prompt),
+			},
+		},
+		visionContent,
+	)
+	return output, nil
+}
+
+type imageGenerationPayload struct {
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	Size           string `json:"size"`
+	N              int    `json:"n"`
+	Quality        string `json:"quality,omitempty"`
+	Style          string `json:"style,omitempty"`
+}
+
+type googleImageGenerationPayload struct {
+	Instances  []googleImageInstance `json:"instances"`
+	Parameters *googleImageParameters `json:"parameters,omitempty"`
+}
+
+type googleImageInstance struct {
+	Prompt string `json:"prompt"`
+}
+
+type googleImageParameters struct {
+	SampleCount int    `json:"sampleCount,omitempty"`
+	Seed        int    `json:"seed,omitempty"`
+	AspectRatio string `json:"aspectRatio,omitempty"`
+}
+
+type imageGenerationResponse struct {
+	Data []struct {
+		B64JSON string `json:"b64_json"`
+		URL     string `json:"url"`
+	} `json:"data"`
+}
+
+type googleImageGenerationResponse struct {
+	Predictions []struct {
+		B64JSON string `json:"b64_json"`
+		Base64  string `json:"base64"`
+		Bytes   string `json:"bytesBase64Encoded"`
+		URL     string `json:"url"`
+		URI     string `json:"uri"`
+		GcsURI  string `json:"gcsUri"`
+	} `json:"predictions"`
+	Candidates []struct {
+		B64JSON string `json:"b64_json"`
+		Base64  string `json:"base64"`
+		Bytes   string `json:"bytesBase64Encoded"`
+		URL     string `json:"url"`
+		URI     string `json:"uri"`
+		GcsURI  string `json:"gcsUri"`
+	} `json:"candidates"`
+}
+
+func callImageGeneration(
+	ctx context.Context,
+	endpoint string,
+	model string,
+	provider string,
+	apiKey string,
+	timeout time.Duration,
+	prompt string,
+	size string,
+	quality string,
+	style string,
+	n int,
+) (string, error) {
+	switch provider {
+	case inspirationImageProviderGoogle:
+		return callImageGenerationGoogle(ctx, endpoint, model, apiKey, timeout, prompt, size, n)
+	default:
+		return callImageGenerationOpenAI(ctx, endpoint, model, apiKey, timeout, prompt, size, quality, style, n)
+	}
+}
+
+func callImageGenerationOpenAI(
+	ctx context.Context,
+	endpoint string,
+	model string,
+	apiKey string,
+	timeout time.Duration,
+	prompt string,
+	size string,
+	quality string,
+	style string,
+	n int,
+) (string, error) {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	normalizedQuality := normalizeImageQuality(model, quality)
+	normalizedStyle := normalizeImageStyle(model, style)
+
+	payload := imageGenerationPayload{
+		Model:          model,
+		Prompt:         prompt,
+		Size:           size,
+		N:              n,
+		Quality:        normalizedQuality,
+		Style:          normalizedStyle,
+	}
+
+	requestBody, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to build image request: %w", err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
+	if err != nil {
+		return "", err
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	applyProviderAuth(httpRequest, inspirationImageProviderOpenAI, apiKey)
+
+	httpClient := &http.Client{Timeout: timeout}
+	response, err := httpClient.Do(httpRequest)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("image generation request timeout")
+		}
+		return "", err
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		errorMessage := strings.TrimSpace(string(body))
+		if errorMessage == "" {
+			errorMessage = http.StatusText(response.StatusCode)
+		}
+		return "", fmt.Errorf("image API returned %d: %s", response.StatusCode, errorMessage)
+	}
+
+	var parsed imageGenerationResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("invalid image response: %w", err)
+	}
+	if len(parsed.Data) == 0 {
+		return "", fmt.Errorf("image API returned empty data set")
+	}
+	if parsed.Data[0].B64JSON != "" {
+		return parsed.Data[0].B64JSON, nil
+	}
+
+	if parsed.Data[0].URL != "" {
+		return fetchImageAsBase64(ctx, parsed.Data[0].URL, timeout)
+	}
+
+	return "", fmt.Errorf("image API did not return base64 or url content")
+}
+
+func callImageGenerationGoogle(
+	ctx context.Context,
+	endpoint string,
+	model string,
+	apiKey string,
+	timeout time.Duration,
+	prompt string,
+	size string,
+	n int,
+) (string, error) {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	requestEndpoint, err := appendGoogleAPIKey(endpoint, apiKey)
+	if err != nil {
+		return "", err
+	}
+
+	aspectRatio := mapImageSizeToAspectRatio(size)
+	requestBody, err := json.Marshal(googleImageGenerationPayload{
+		Instances: []googleImageInstance{
+			{
+				Prompt: prompt,
+			},
+		},
+		Parameters: &googleImageParameters{
+			SampleCount: n,
+			AspectRatio: aspectRatio,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to build google image request: %w", err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, requestEndpoint, bytes.NewReader(requestBody))
+	if err != nil {
+		return "", err
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	applyProviderAuth(httpRequest, inspirationImageProviderGoogle, apiKey)
+
+	httpClient := &http.Client{Timeout: timeout}
+	response, err := httpClient.Do(httpRequest)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("google image generation request timeout")
+		}
+		return "", err
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		errorMessage := strings.TrimSpace(string(body))
+		if errorMessage == "" {
+			errorMessage = http.StatusText(response.StatusCode)
+		}
+		if response.StatusCode == http.StatusNotFound {
+			return "", fmt.Errorf(
+				"google image API returned 404: %s. Verify model and method for model in endpoint. Current config usually expects imagen-4.0-generate-001 with .../v1beta/models/{model}:predict",
+				errorMessage,
+			)
+		}
+		return "", fmt.Errorf("google image API returned %d: %s", response.StatusCode, errorMessage)
+	}
+
+	var parsed googleImageGenerationResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("invalid google image response: %w", err)
+	}
+
+	var base64Image string
+	for _, prediction := range parsed.Predictions {
+		base64Image = pickFirstImageContent(prediction.B64JSON, prediction.Base64, prediction.Bytes, prediction.URL, prediction.URI)
+		if base64Image != "" {
+			break
+		}
+	}
+	if base64Image != "" {
+		return base64Image, nil
+	}
+
+	for _, candidate := range parsed.Candidates {
+		base64Image = pickFirstImageContent(candidate.B64JSON, candidate.Base64, candidate.Bytes, candidate.URL, candidate.URI)
+		if base64Image != "" {
+			break
+		}
+	}
+	if base64Image != "" {
+		return base64Image, nil
+	}
+
+	// Fallback for providers returning URL-style payload with predictions.
+	for _, prediction := range parsed.Predictions {
+		if strings.TrimSpace(prediction.URL) != "" {
+			return fetchImageAsBase64(ctx, prediction.URL, timeout)
+		}
+		if strings.TrimSpace(prediction.URI) != "" {
+			return fetchImageAsBase64(ctx, prediction.URI, timeout)
+		}
+		if strings.TrimSpace(prediction.GcsURI) != "" {
+			return fetchImageAsBase64(ctx, prediction.GcsURI, timeout)
+		}
+	}
+	for _, candidate := range parsed.Candidates {
+		if strings.TrimSpace(candidate.URL) != "" {
+			return fetchImageAsBase64(ctx, candidate.URL, timeout)
+		}
+		if strings.TrimSpace(candidate.URI) != "" {
+			return fetchImageAsBase64(ctx, candidate.URI, timeout)
+		}
+		if strings.TrimSpace(candidate.GcsURI) != "" {
+			return fetchImageAsBase64(ctx, candidate.GcsURI, timeout)
+		}
+	}
+
+	return "", fmt.Errorf("google image API did not return image content")
+}
+
+func pickFirstImageContent(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func inspirationImageCacheKey(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return hex.EncodeToString(sum[:])
+}
+
+func inspirationImageCachePath(cacheDir string, key string) string {
+	return filepath.Join(strings.TrimSpace(cacheDir), key+".png")
+}
+
+func loadImageInspirationCache(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			txtPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".txt"
+			textData, txtErr := os.ReadFile(txtPath)
+			if txtErr == nil {
+				return strings.TrimSpace(string(textData)), nil
+			}
+			if os.IsNotExist(txtErr) {
+				return "", nil
+			}
+			return "", txtErr
+		}
+		return "", err
+	}
+
+	if strings.HasPrefix(string(data), "data:") {
+		if commaIndex := strings.Index(string(data), ","); commaIndex >= 0 && commaIndex < len(data) {
+			return strings.TrimSpace(string(data[commaIndex+1:])), nil
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+
+	if isBase64ImageData(string(data)) {
+		return strings.TrimSpace(string(data)), nil
+	}
+
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+func saveImageInspirationCache(path string, imageBase64 string) error {
+	cacheDir := filepath.Dir(path)
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return err
+	}
+	imageData := strings.TrimSpace(imageBase64)
+	rawData, err := base64.StdEncoding.DecodeString(imageData)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, rawData, 0o644)
+}
+
+func isBase64ImageData(value string) bool {
+	clean := strings.TrimSpace(value)
+	if clean == "" {
+		return false
+	}
+	if strings.ContainsRune(clean, '\n') || strings.ContainsRune(clean, '\r') {
+		return false
+	}
+	if strings.HasPrefix(clean, "http://") || strings.HasPrefix(clean, "https://") || strings.HasPrefix(clean, "data:") {
+		return false
+	}
+	for _, char := range clean {
+		if (char >= 'A' && char <= 'Z') ||
+			(char >= 'a' && char <= 'z') ||
+			(char >= '0' && char <= '9') ||
+			char == '+' ||
+			char == '/' ||
+			char == '=' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func normalizeImageQuality(model string, quality string) string {
+	modelName := strings.ToLower(strings.TrimSpace(model))
+	requested := strings.ToLower(strings.TrimSpace(quality))
+	if requested == "" {
+		return ""
+	}
+
+	if strings.Contains(modelName, "gpt-image-1") {
+		switch requested {
+		case "low", "medium", "high", "auto":
+			return requested
+		case "standard", "hd":
+			return "medium"
+		default:
+			return ""
+		}
+	}
+
+	return requested
+}
+
+func normalizeImageStyle(model string, style string) string {
+	modelName := strings.ToLower(strings.TrimSpace(model))
+	requested := strings.TrimSpace(style)
+	if requested == "" {
+		return ""
+	}
+
+	if strings.Contains(modelName, "gpt-image-1") {
+		return ""
+	}
+
+	return requested
+}
+
+func inspirationImageProviderEnvVar(provider string, suffix string) string {
+	providerName := strings.ToLower(strings.TrimSpace(provider))
+	switch providerName {
+	case inspirationImageProviderOpenAI:
+		return "INSPIRATION_OPENAI_IMAGE_" + strings.TrimSpace(suffix)
+	case inspirationImageProviderGoogle:
+		return "INSPIRATION_GOOGLE_IMAGE_" + strings.TrimSpace(suffix)
+	default:
+		return "INSPIRATION_OPENAI_IMAGE_" + strings.TrimSpace(suffix)
+	}
+}
+
+func inspirationVisionProviderEnvVar(provider string, suffix string) string {
+	providerName := strings.ToLower(strings.TrimSpace(provider))
+	switch providerName {
+	case inspirationImageProviderOpenAI:
+		return "INSPIRATION_OPENAI_VISION_" + strings.TrimSpace(suffix)
+	case inspirationImageProviderGoogle:
+		return "INSPIRATION_GOOGLE_VISION_" + strings.TrimSpace(suffix)
+	default:
+		return "INSPIRATION_OPENAI_VISION_" + strings.TrimSpace(suffix)
+	}
+}
+
+func inspirationImageDefaultEndpoint(provider string) string {
+	providerName := strings.ToLower(strings.TrimSpace(provider))
+	if providerName == inspirationImageProviderGoogle {
+		return inspirationImageDefaultGoogleEndpoint
+	}
+	return inspirationImageDefaultOpenAIEndpoint
+}
+
+func inspirationImageDefaultModel(provider string) string {
+	providerName := strings.ToLower(strings.TrimSpace(provider))
+	if providerName == inspirationImageProviderGoogle {
+		return inspirationImageDefaultGoogleModel
+	}
+	return inspirationImageDefaultOpenAIModel
+}
+
+func inspirationVisionDefaultEndpoint(provider string) string {
+	providerName := strings.ToLower(strings.TrimSpace(provider))
+	if providerName == inspirationImageProviderGoogle {
+		return inspirationVisionDefaultGoogleEndpoint
+	}
+	return inspirationVisionDefaultOpenAIEndpoint
+}
+
+func inspirationVisionDefaultModel(provider string) string {
+	providerName := strings.ToLower(strings.TrimSpace(provider))
+	if providerName == inspirationImageProviderGoogle {
+		return inspirationVisionDefaultGoogleModel
+	}
+	return inspirationVisionDefaultOpenAIModel
+}
+
+func normalizeInspirationProvider(rawProvider string, endpoint string, model string) string {
+	provider := strings.ToLower(strings.TrimSpace(rawProvider))
+	if provider == inspirationImageProviderGoogle || provider == inspirationImageProviderOpenAI {
+		return provider
+	}
+
+	lowerEndpoint := strings.ToLower(strings.TrimSpace(endpoint))
+	if strings.Contains(lowerEndpoint, "googleapis") || strings.Contains(lowerEndpoint, "generativelanguage") {
+		return inspirationImageProviderGoogle
+	}
+
+	lowerModel := strings.ToLower(strings.TrimSpace(model))
+	if strings.Contains(lowerModel, "gemini") || strings.Contains(lowerModel, "imagen") {
+		return inspirationImageProviderGoogle
+	}
+
+	return inspirationImageProviderOpenAI
+}
+
+func mapImageSizeToAspectRatio(size string) string {
+	switch strings.TrimSpace(size) {
+	case "1024x1792", "768x1024", "1024x1536", "9:16":
+		return "9:16"
+	case "1792x1024", "1536x1024", "1365x768", "16:10", "4:3", "16:9":
+		return "16:9"
+	case "1024x1024", "1080x1080", "1:1":
+		return "1:1"
+	case "1365x1024", "1024x1365":
+		return "4:3"
+	default:
+		return "1:1"
+	}
+}
+
+func appendGoogleAPIKey(endpoint string, apiKey string) (string, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return endpoint, nil
+	}
+
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", err
+	}
+
+	query := parsed.Query()
+	if query.Get("key") == "" {
+		query.Set("key", apiKey)
+		parsed.RawQuery = query.Encode()
+	}
+
+	return parsed.String(), nil
+}
+
+func applyProviderAuth(request *http.Request, provider string, apiKey string) {
+	if strings.TrimSpace(apiKey) == "" {
+		return
+	}
+
+	switch provider {
+	case inspirationImageProviderGoogle:
+		request.Header.Set("x-goog-api-key", apiKey)
+	case inspirationImageProviderOpenAI:
+		request.Header.Set("Authorization", "Bearer "+apiKey)
+	default:
+		request.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+}
+
+func fetchImageAsBase64(ctx context.Context, imageURL string, timeout time.Duration) (string, error) {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(callCtx, http.MethodGet, imageURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	httpClient := &http.Client{Timeout: timeout}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("download image timeout")
+		}
+		return "", err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("failed to download image from provider: %s", http.StatusText(response.StatusCode))
+	}
+
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+type visionInput struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+}
+
+type visionPrompt struct {
+	Role    string       `json:"role"`
+	Content []visionInput `json:"content"`
+}
+
+type responsesRequest struct {
+	Model  string        `json:"model"`
+	Input  []visionPrompt `json:"input"`
+}
+
+type geminiPart struct {
+	Text string          `json:"text,omitempty"`
+	InlineData *geminiInlineData `json:"inlineData,omitempty"`
+}
+
+type geminiInlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
+type geminiContent struct {
+	Role  string      `json:"role"`
+	Parts []geminiPart `json:"parts"`
+}
+
+type geminiVisionRequest struct {
+	Contents []geminiContent `json:"contents"`
+}
+
+type geminiCandidate struct {
+	Content struct {
+		Parts []geminiPart `json:"parts"`
+	} `json:"content"`
+}
+
+type geminiVisionResponse struct {
+	Candidates []geminiCandidate `json:"candidates"`
+}
+
+type visionResponse struct {
+	OutputText string                  `json:"output_text"`
+	Output     []struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"output"`
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
+func callVisionToCode(
+	ctx context.Context,
+	endpoint string,
+	model string,
+	provider string,
+	apiKey string,
+	timeout time.Duration,
+	conversionPrompt string,
+	imageBase64 string,
+	imagePrompt string,
+) (string, error) {
+	switch provider {
+	case inspirationImageProviderGoogle:
+		return callVisionToCodeGoogle(ctx, endpoint, model, apiKey, timeout, conversionPrompt, imageBase64, imagePrompt)
+	default:
+		return callVisionToCodeOpenAI(ctx, endpoint, model, apiKey, timeout, conversionPrompt, imageBase64, imagePrompt)
+	}
+}
+
+func callVisionToCodeOpenAI(
+	ctx context.Context,
+	endpoint string,
+	model string,
+	apiKey string,
+	timeout time.Duration,
+	conversionPrompt string,
+	imageBase64 string,
+	imagePrompt string,
+) (string, error) {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	input := []visionPrompt{
+		{
+			Role: "user",
+			Content: []visionInput{
+				{
+					Type: "input_text",
+					Text: buildVisionPromptForImage(conversionPrompt, imagePrompt),
+				},
+				{
+					Type:    "input_image",
+					ImageURL: "data:image/png;base64," + imageBase64,
+				},
+			},
+		},
+	}
+
+	requestBody, err := json.Marshal(responsesRequest{
+		Model: model,
+		Input: input,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to build vision request: %w", err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
+	if err != nil {
+		return "", err
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	applyProviderAuth(httpRequest, inspirationImageProviderOpenAI, apiKey)
+
+	httpClient := &http.Client{Timeout: timeout}
+	response, err := httpClient.Do(httpRequest)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("vision conversion request timeout")
+		}
+		return "", err
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		errorMessage := strings.TrimSpace(string(body))
+		if errorMessage == "" {
+			errorMessage = http.StatusText(response.StatusCode)
+		}
+		return "", fmt.Errorf("vision API returned %d: %s", response.StatusCode, errorMessage)
+	}
+
+	var parsed visionResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("invalid vision response: %w", err)
+	}
+
+	if strings.TrimSpace(parsed.OutputText) != "" {
+		return strings.TrimSpace(parsed.OutputText), nil
+	}
+
+	for _, output := range parsed.Output {
+		for _, content := range output.Content {
+			if strings.TrimSpace(content.Text) != "" {
+				return strings.TrimSpace(content.Text), nil
+			}
+		}
+	}
+
+	if len(parsed.Choices) > 0 && strings.TrimSpace(parsed.Choices[0].Message.Content) != "" {
+		return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
+	}
+
+	return "", fmt.Errorf("vision API response has no textual output")
+}
+
+func callVisionToCodeGoogle(
+	ctx context.Context,
+	endpoint string,
+	model string,
+	apiKey string,
+	timeout time.Duration,
+	conversionPrompt string,
+	imageBase64 string,
+	imagePrompt string,
+) (string, error) {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	requestEndpoint, err := appendGoogleAPIKey(endpoint, apiKey)
+	if err != nil {
+		return "", err
+	}
+
+	requestBody, err := json.Marshal(geminiVisionRequest{
+		Contents: []geminiContent{
+			{
+				Role: "user",
+				Parts: []geminiPart{
+					{Text: buildVisionPromptForImage(conversionPrompt, imagePrompt)},
+					{
+						InlineData: &geminiInlineData{
+							MimeType: "image/png",
+							Data:     imageBase64,
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to build google vision request: %w", err)
+	}
+
+	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, requestEndpoint, bytes.NewReader(requestBody))
+	if err != nil {
+		return "", err
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	applyProviderAuth(httpRequest, inspirationImageProviderGoogle, apiKey)
+
+	httpClient := &http.Client{Timeout: timeout}
+	response, err := httpClient.Do(httpRequest)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("google vision conversion request timeout")
+		}
+		return "", err
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		errorMessage := strings.TrimSpace(string(body))
+		if errorMessage == "" {
+			errorMessage = http.StatusText(response.StatusCode)
+		}
+		return "", fmt.Errorf("google vision API returned %d: %s", response.StatusCode, errorMessage)
+	}
+
+	var parsed geminiVisionResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("invalid google vision response: %w", err)
+	}
+
+	for _, candidate := range parsed.Candidates {
+		for _, part := range candidate.Content.Parts {
+			if strings.TrimSpace(part.Text) != "" {
+				return strings.TrimSpace(part.Text), nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("google vision response has no textual output")
+}
+
+func buildVisionPromptForImage(basePrompt string, imagePrompt string) string {
+	if basePrompt == "" {
+		basePrompt = "No extra instructions."
+	}
+	if imagePrompt != "" {
+		return basePrompt + "\n\nImage prompt used during generation:\n" + imagePrompt
+	}
+	return basePrompt
+}
+
+func buildInspirationConversionPrompt(context *generationContext) string {
+	template := loadPromptTemplateFromEnv(
+		inspirationConversionPromptTemplatePath,
+		inspirationConversionPromptTemplateEnv,
+		defaultInspirationConversionPromptTemplate(),
+	)
+
+	contextLines := make([]string, 0, 6)
+	if context != nil {
+		if strings.TrimSpace(context.Locale) != "" {
+			contextLines = append(contextLines, "Locale: "+strings.TrimSpace(context.Locale)+".")
+		}
+		if strings.TrimSpace(context.Theme) != "" {
+			contextLines = append(contextLines, "Theme: "+strings.TrimSpace(context.Theme)+".")
+		}
+		if strings.TrimSpace(context.TargetDensity) != "" {
+			contextLines = append(contextLines, "Target density: "+strings.TrimSpace(context.TargetDensity)+".")
+		}
+		if len(context.EnabledPacks) > 0 {
+			contextLines = append(contextLines, "Enabled packs: "+strings.Join(context.EnabledPacks, ", ")+".")
+		}
+	}
+	contextText := strings.TrimSpace(strings.Join(contextLines, "\n"))
+	if contextText == "" {
+		contextText = "No additional context constraints."
+	}
+
+	template = strings.ReplaceAll(template, "{{context}}", contextText)
+	return template
+}
+
+func defaultInspirationConversionPromptTemplate() string {
+	return `You are a Vue screen generator. Return ONLY a valid JSON object with EXACT keys: pug, css, data.
+No markdown, no code fences, no explanations, no extra keys.
+The output must match this contract.
+Contract example:
+{
+  "pug": "div.screen",
+  "css": ".screen { width: 100%; }",
+  "data": { "title": "Example", "subtitle": "Example" }
+}
+Output constraints:
+- "pug": bootstrap-vue-first, no html wrappers like <html>, <head>, <body>, no <img> tags.
+- "css": plain CSS only, no preprocessors.
+- "data": object used by the generated template with realistic defaults.
+Prefer semantic class names and avoid inventing unknown components.
+If needed, use Vue bindings (v-model, :prop, @event) and reference fields from data.
+Convert the provided image into a valid screen implementation that matches the visual design.
+
+Context:
+{{context}}`
 }
 
 func callCerebrasUXEvaluator(ctx context.Context, input uxEvaluatorRequest) (string, error) {

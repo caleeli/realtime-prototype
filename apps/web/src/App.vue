@@ -17,7 +17,7 @@ import {
   GenerationPipelineService,
   type UXEvaluatorResultLine,
   type GenerationMessage,
-  type GenerationRequest,
+  type InspirationRequest,
 } from './services/generationPipelineService';
 import {
   buildGeneratedScreen,
@@ -89,6 +89,7 @@ const promptInput = ref<HTMLTextAreaElement | null>(null);
 const conversation: Ref<ChatMessage[]> = ref([]);
 const isConversationVisible = ref(false);
 const isGenerating = ref(false);
+const didUseInspiration = ref(false);
 const message = ref('Escribe una descripción y pulsa "Generar pantalla".');
 const generatedState: Ref<GeneratedViewState | null> = ref(null);
 const generatedComponent: Ref<Component | null> = ref(null);
@@ -390,7 +391,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
   const previousStyleCleanup = cleanupStyle.value;
   const nextStyleId = `pipeline-runtime-generated-${screenRevision.value + 1}`;
 
-  const payload: GenerationRequest = {
+  const payload: InspirationRequest = {
     prompt,
     context: {
       locale: navigator.language || 'es-ES',
@@ -402,7 +403,13 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
   };
 
   try {
-    const pipelineOutput = await pipelineService.generate(payload);
+    const shouldUseInspirationEndpoint = !didUseInspiration.value;
+    const pipelineOutput = shouldUseInspirationEndpoint
+      ? await pipelineService.generateFromInspiration(payload)
+      : await pipelineService.generate(payload);
+    if (shouldUseInspirationEndpoint) {
+      didUseInspiration.value = true;
+    }
     if (pipelineOutput.messages.length > 0) {
       syncConversationFromBackend(pipelineOutput.messages);
     } else {

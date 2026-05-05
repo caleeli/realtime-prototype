@@ -152,6 +152,88 @@ export const RenderDesdePugCssData: Story = {
   },
 };
 
+export const LoginFormWithPrependTemplates: Story = {
+  args: {
+    ...meta.args,
+    pug: [
+      'div.login-screen',
+      '  h1.title {{ title }}',
+      '  b-form(@submit.prevent="onLogin")',
+      '    b-input-group.mb-3',
+      '      template(#prepend)',
+      '        span.input-group-text',
+      '          i.bi.bi-envelope',
+      '      b-form-input(type="email" v-model="form.email" placeholder="Email address" required)',
+      '    b-input-group.mb-3',
+      '      template(#prepend)',
+      '        span.input-group-text',
+      '          i.bi.bi-lock',
+      '      b-form-input(type="password" v-model="form.password" placeholder="Password" required)',
+      '    b-button.btn-primary.btn-block(type="submit") {{ buttonText }}',
+      '  a.forgot-link(href="#") {{ forgotText }}',
+    ].join('\n'),
+    css: [
+      '.login-screen {',
+      '  max-width: 420px;',
+      '  margin: 0 auto;',
+      '  padding: 1.5rem;',
+      '  border: 1px solid #d9e2f5;',
+      '  border-radius: 12px;',
+      '  background: #f8fbff;',
+      '}',
+      '.login-screen .title {',
+      '  margin-bottom: 1rem;',
+      '  font-size: 1.7rem;',
+      '  font-weight: 700;',
+      '}',
+      '.login-screen .forgot-link {',
+      '  display: inline-block;',
+      '  margin-top: 0.75rem;',
+      '  color: #2d5ec9;',
+      '}',
+      '.login-screen .btn-block {',
+      '  width: 100%;',
+      '}',
+      '.login-screen .input-group-text {',
+      '  border-right: 0;',
+      '}',
+      '.login-screen .bi {',
+      '  color: #4b5563;',
+      '}',
+    ].join('\n'),
+    data: {
+      title: 'Acceso',
+      buttonText: 'Entrar',
+      forgotText: '¿Olvidaste tu contraseña?',
+      form: {
+        email: 'usuario@ejemplo.com',
+        password: 'demo1234',
+      },
+      onLogin: () => {
+        // no-op para story
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const root = canvasElement as HTMLElement;
+
+    const hasEnvelopeIcon = !!root.querySelector('.input-group-text .bi.bi-envelope');
+    if (!hasEnvelopeIcon) {
+      throw new Error('No se renderizó el icono de email en el slot prepend.');
+    }
+
+    const hasLockIcon = !!root.querySelector('.input-group-text .bi.bi-lock');
+    if (!hasLockIcon) {
+      throw new Error('No se renderizó el icono de contraseña en el slot prepend.');
+    }
+
+    const form = root.querySelector('form');
+    if (!form) {
+      throw new Error('No se renderizó el formulario de login.');
+    }
+  },
+};
+
 export const BenchmarkScreen: Story = {
   args: {
     ...meta.args,
