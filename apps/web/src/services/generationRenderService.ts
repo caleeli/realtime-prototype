@@ -309,6 +309,62 @@ function getPathValue(source: PipelineScreenData, path: string): unknown {
   return current;
 }
 
+interface VForDescriptor {
+  itemAlias: string;
+  indexAlias: string | null;
+  sourceExpression: string;
+}
+
+function parseVForExpression(expression: string): VForDescriptor | null {
+  const normalized = expression.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const match = normalized.match(
+    /^\(\s*([a-zA-Z_$][\w$]*)\s*(?:,\s*([a-zA-Z_$][\w$]*))?\s*\)\s+in\s+(.+)$|^([a-zA-Z_$][\w$]*)\s+in\s+(.+)$/,
+  );
+  if (!match) {
+    return null;
+  }
+
+  const itemAlias = match[1] || match[4];
+  const indexAlias = match[2] || null;
+  const sourceExpression = (match[3] || match[5] || '').trim();
+  if (!itemAlias || !sourceExpression) {
+    return null;
+  }
+
+  return {
+    itemAlias,
+    indexAlias,
+    sourceExpression,
+  };
+}
+
+function toIterable(value: unknown): unknown[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  if (value === null || value === undefined) {
+    return [];
+  }
+
+  if (typeof value === 'string') {
+    return [];
+  }
+
+  if (typeof value === 'object') {
+    if (typeof (value as { [Symbol.iterator]?: () => unknown })?.[Symbol.iterator] === 'function') {
+      return Array.from(value as Iterable<unknown>);
+    }
+    return Object.values(value as Record<string, unknown>);
+  }
+
+  return [];
+}
+
 function parseScalar(value: string): string | number | boolean | null {
   const trimmed = value.trim();
 
@@ -533,6 +589,62 @@ function toVNode(
       return evaluateArrayToVNodes(evaluated, context);
     }
     return String(evaluated);
+  }
+
+  if (node.type === 'element') {
+    const forAttribute = node.attributes.vFor ?? node.attributes['v-for'];
+    if (typeof forAttribute === 'string') {
+      const descriptor = parseVForExpression(forAttribute);
+      if (!descriptor) {
+        return null;
+      }
+
+      const iterableValue = resolveExpression(descriptor.sourceExpression, context);
+      const iterable = toIterable(iterableValue);
+      if (iterable.length === 0) {
+        return null;
+      }
+
+      const loopAttributes: Record<string, string | number | boolean> = { ...node.attributes };
+      delete loopAttributes.vFor;
+      delete loopAttributes['v-for'];
+
+      const children: Array<VNode | string> = [];
+      for (let index = 0; index < iterable.length; index += 1) {
+        const item = iterable[index];
+        const loopContext: PipelineScreenData = {
+          ...context,
+          [descriptor.itemAlias]: item,
+        };
+        if (descriptor.indexAlias) {
+          loopContext[descriptor.indexAlias] = index;
+        }
+
+        const loopNode: PugTreeElementNode = {
+          ...node,
+          attributes: loopAttributes,
+        };
+
+        const rendered = toVNode(loopNode, loopContext, componentRegistry);
+        if (rendered === null) {
+          continue;
+        }
+
+        if (Array.isArray(rendered)) {
+          for (const child of rendered) {
+            if (child === null) {
+              continue;
+            }
+            children.push(child);
+          }
+          continue;
+        }
+
+        children.push(rendered);
+      }
+
+      return children;
+    }
   }
 
   const props: Record<string, unknown> = {};
