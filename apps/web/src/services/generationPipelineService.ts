@@ -20,6 +20,33 @@ export interface GenerationRequest {
   messages?: GenerationMessage[];
 }
 
+export interface DataGenerationRequest {
+  prompt: string;
+  currentPug?: string;
+  currentData?: unknown;
+  context?: GenerationContext;
+  messages?: GenerationMessage[];
+}
+
+export interface DataGenerationResult {
+  data: unknown;
+  messages: GenerationMessage[];
+}
+
+export interface PugGenerationRequest {
+  prompt: string;
+  currentPug?: string;
+  currentData?: unknown;
+  currentCss?: string;
+  context?: GenerationContext;
+  messages?: GenerationMessage[];
+}
+
+export interface PugGenerationResult {
+  pug: string;
+  messages: GenerationMessage[];
+}
+
 export interface InspirationRequest extends GenerationRequest {
   imagePrompt?: string;
   imageModel?: string;
@@ -110,6 +137,8 @@ export class GenerationServiceError extends Error {
 }
 
 const BASE_ENDPOINT = '/api/generation';
+const DATA_GENERATION_ENDPOINT = '/api/data-generation';
+const PUG_GENERATION_ENDPOINT = '/pug-generation';
 const BASE_INSPIRATION_ENDPOINT = '/inspiration';
 const UX_EVALUATOR_ENDPOINT = '/ux-evaluator';
 const DEFAULT_GENERATION_TIMEOUT_MS = readFrontendTimeoutEnv('VITE_GENERATION_TIMEOUT_MS', 30000);
@@ -960,6 +989,40 @@ function normalizeBackendResponse(raw: unknown): {
   };
 }
 
+function normalizeBackendDataResponse(raw: unknown): DataGenerationResult {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error('Backend response payload is malformed');
+  }
+
+  const payload = raw as { data?: unknown; messages?: unknown[] };
+  const data = payload.data === undefined ? {} : payload.data;
+  const messages = normalizeBackendMessages(payload.messages);
+
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('Backend response data payload is not an object');
+  }
+
+  return {
+    data,
+    messages,
+  };
+}
+
+function normalizeBackendPugResponse(raw: unknown): PugGenerationResult {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error('Backend response payload is malformed');
+  }
+
+  const payload = raw as { pug?: unknown; messages?: unknown[] };
+  const pug = typeof payload.pug === 'string' ? payload.pug : '';
+  const messages = normalizeBackendMessages(payload.messages);
+
+  return {
+    pug,
+    messages,
+  };
+}
+
 function isPugLike(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -980,6 +1043,8 @@ function isPugLike(text: string): boolean {
 export class GenerationPipelineService {
   private readonly componentCatalogClient: ComponentCatalogClient;
   private readonly endpoint: string;
+  private readonly dataEndpoint: string;
+  private readonly pugEndpoint: string;
   private readonly inspirationEndpoint: string;
   private readonly evaluatorEndpoint: string;
   private readonly generationTimeoutMs: number;
@@ -992,6 +1057,8 @@ export class GenerationPipelineService {
   constructor(private readonly options: GenerationPipelineServiceOptions = {}) {
     const baseUrl = options.baseUrl?.trim() || '/api';
     this.endpoint = `${baseUrl}/generation`;
+    this.dataEndpoint = `${baseUrl}/data-generation`;
+    this.pugEndpoint = `${baseUrl}${PUG_GENERATION_ENDPOINT}`;
     this.inspirationEndpoint = `${baseUrl}${BASE_INSPIRATION_ENDPOINT}`;
     this.evaluatorEndpoint = `${baseUrl}${UX_EVALUATOR_ENDPOINT}`;
     this.generationTimeoutMs = options.generationTimeoutMs ?? DEFAULT_GENERATION_TIMEOUT_MS;
@@ -1064,6 +1131,48 @@ export class GenerationPipelineService {
     return normalizeBackendResponse(parsed);
   }
 
+  private async fetchDataGeneration(input: DataGenerationRequest): Promise<DataGenerationResult> {
+    const response = await this.fetchWithTimeout(
+      this.dataEndpoint,
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: JSON.stringify(input),
+      },
+      this.generationTimeoutMs,
+      'Data generation',
+    );
+
+    const body = await response.text();
+    if (!response.ok) {
+      throw new GenerationServiceError(`Data generation failed with ${response.status}`, response.status, body);
+    }
+
+    const parsed = safeParseJSON(body);
+    return normalizeBackendDataResponse(parsed);
+  }
+
+  private async fetchPugGeneration(input: PugGenerationRequest): Promise<PugGenerationResult> {
+    const response = await this.fetchWithTimeout(
+      this.pugEndpoint,
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: JSON.stringify(input),
+      },
+      this.generationTimeoutMs,
+      'Pug generation',
+    );
+
+    const body = await response.text();
+    if (!response.ok) {
+      throw new GenerationServiceError(`Pug generation failed with ${response.status}`, response.status, body);
+    }
+
+    const parsed = safeParseJSON(body);
+    return normalizeBackendPugResponse(parsed);
+  }
+
   private async fetchInspiration(
     input: InspirationRequest,
   ): Promise<{ pug: string; css: string; data: unknown; messages: GenerationMessage[] }> {
@@ -1118,6 +1227,16 @@ export class GenerationPipelineService {
   ): Promise<GenerationPipelineResult> {
     const output = await this.fetchInspiration(input);
     return this.renderPipelineOutput(output, catalog);
+  }
+
+  async generateData(input: DataGenerationRequest): Promise<DataGenerationResult> {
+    const output = await this.fetchDataGeneration(input);
+    return output;
+  }
+
+  async generatePug(input: PugGenerationRequest): Promise<PugGenerationResult> {
+    const output = await this.fetchPugGeneration(input);
+    return output;
   }
 
   async renderFromStoredState(

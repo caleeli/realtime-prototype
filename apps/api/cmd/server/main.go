@@ -401,6 +401,54 @@ func main() {
 		writeJSON(w, http.StatusOK, output)
 	}))
 
+	mux.HandleFunc("/api/data-generation", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var input dataGenerationRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+			return
+		}
+		output, err := callCerebrasDataGeneration(r.Context(), input)
+		if err != nil {
+			if errors.Is(err, errMissingCerebrasKey) {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, output)
+	}))
+
+	mux.HandleFunc("/api/pug-generation", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var input pugGenerationRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+			return
+		}
+		output, err := callCerebrasPugGeneration(r.Context(), input)
+		if err != nil {
+			if errors.Is(err, errMissingCerebrasKey) {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, output)
+	}))
+
 	inspirationHandler := withCORS(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -522,6 +570,23 @@ type generationRequest struct {
 	Messages []cerebrasChatMessage `json:"messages"`
 }
 
+type dataGenerationRequest struct {
+	Prompt    string                `json:"prompt"`
+	Context   *generationContext    `json:"context"`
+	CurrentPug string               `json:"currentPug"`
+	CurrentData interface{}         `json:"currentData"`
+	Messages  []cerebrasChatMessage `json:"messages"`
+}
+
+type pugGenerationRequest struct {
+	Prompt      string                `json:"prompt"`
+	Context     *generationContext    `json:"context"`
+	CurrentPug  string                `json:"currentPug"`
+	CurrentCss  string                `json:"currentCss"`
+	CurrentData interface{}           `json:"currentData"`
+	Messages    []cerebrasChatMessage `json:"messages"`
+}
+
 type inspirationRequest struct {
 	Prompt          string                `json:"prompt"`
 	Context         *generationContext    `json:"context"`
@@ -541,6 +606,16 @@ type generationResponse struct {
 	Data interface{} `json:"data"`
 	// Messages represent the conversation after this turn, excluding system messages.
 	Messages []cerebrasChatMessage `json:"messages,omitempty"`
+}
+
+type dataGenerationResponse struct {
+	Data     interface{}           `json:"data"`
+	Messages []cerebrasChatMessage  `json:"messages,omitempty"`
+}
+
+type pugGenerationResponse struct {
+	Pug      string                `json:"pug"`
+	Messages []cerebrasChatMessage  `json:"messages,omitempty"`
 }
 
 type uxEvaluatorRequest struct {
@@ -671,6 +746,160 @@ func callCerebrasGeneration(ctx context.Context, input generationRequest) (gener
 	}
 
 	return generationResponse{}, fmt.Errorf("%w\n%s", lastErr, outputContent)
+}
+
+func callCerebrasDataGeneration(ctx context.Context, input dataGenerationRequest) (dataGenerationResponse, error) {
+	apiKey := strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY"))
+	if apiKey == "" {
+		return dataGenerationResponse{}, errMissingCerebrasKey
+	}
+
+	endpoint := strings.TrimSpace(os.Getenv("CEREBRAS_API_URL"))
+	if endpoint == "" {
+		endpoint = cerebrasDefaultEndpoint
+	}
+	model := strings.TrimSpace(os.Getenv("CEREBRAS_MODEL"))
+	if model == "" {
+		model = cerebrasDefaultModel
+	}
+
+	timeoutMs := parseIntFromEnv("CEREBRAS_TIMEOUT_MS", 20000)
+	clientTimeout := time.Duration(timeoutMs) * time.Millisecond
+	messages := buildCerebrasDataGenerationMessages(input)
+
+	maxAttempts := 1
+	repairEnabled := parseBoolFromEnv(generationRepairEnabledEnv, false)
+	if repairEnabled {
+		maxAttempts = 2
+	}
+
+	var output dataGenerationResponse
+	var outputContent string
+	var jsonCandidate string
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		jsonCandidate = ""
+		content, err := requestCerebrasContent(
+			ctx,
+			endpoint,
+			model,
+			apiKey,
+			clientTimeout,
+			messages,
+			&cerebrasResponseFormat{
+				Type: "json_object",
+			},
+		)
+		if err != nil {
+			return dataGenerationResponse{}, err
+		}
+		outputContent = content
+
+		jsonCandidate, err = extractJSONFromText(outputContent)
+		if err != nil {
+			lastErr = fmt.Errorf("model output is not JSON: %w", err)
+		} else {
+			jsonCandidate = normalizeGeneratedJSONCandidate(jsonCandidate)
+			lastErr = parseDataGenerationJSONCandidate(jsonCandidate, &output)
+		}
+
+		if lastErr == nil {
+			output.Messages = appendConversationMessagesForResponse(messages, outputContent)
+			output = sanitizeDataGenerationResponse(output)
+			return output, nil
+		}
+
+		if !repairEnabled || attempt+1 >= maxAttempts || !isRecoverableGeneratedJSONError(lastErr) {
+			return dataGenerationResponse{}, fmt.Errorf("%w\n%s", lastErr, jsonCandidate)
+		}
+
+		messages = append(messages, cerebrasChatMessage{
+			Role:    "assistant",
+			Content: outputContent,
+		}, cerebrasChatMessage{
+			Role:    "user",
+			Content: buildDataGenerationRepairPrompt(outputContent, jsonCandidate, lastErr),
+		})
+	}
+
+	return dataGenerationResponse{}, fmt.Errorf("%w\n%s", lastErr, outputContent)
+}
+
+func callCerebrasPugGeneration(ctx context.Context, input pugGenerationRequest) (pugGenerationResponse, error) {
+	apiKey := strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY"))
+	if apiKey == "" {
+		return pugGenerationResponse{}, errMissingCerebrasKey
+	}
+
+	endpoint := strings.TrimSpace(os.Getenv("CEREBRAS_API_URL"))
+	if endpoint == "" {
+		endpoint = cerebrasDefaultEndpoint
+	}
+	model := strings.TrimSpace(os.Getenv("CEREBRAS_MODEL"))
+	if model == "" {
+		model = cerebrasDefaultModel
+	}
+
+	timeoutMs := parseIntFromEnv("CEREBRAS_TIMEOUT_MS", 20000)
+	clientTimeout := time.Duration(timeoutMs) * time.Millisecond
+	messages := buildCerebrasPugGenerationMessages(input)
+
+	maxAttempts := 1
+	repairEnabled := parseBoolFromEnv(generationRepairEnabledEnv, false)
+	if repairEnabled {
+		maxAttempts = 2
+	}
+
+	var output pugGenerationResponse
+	var outputContent string
+	var jsonCandidate string
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		jsonCandidate = ""
+		content, err := requestCerebrasContent(
+			ctx,
+			endpoint,
+			model,
+			apiKey,
+			clientTimeout,
+			messages,
+			&cerebrasResponseFormat{
+				Type: "json_object",
+			},
+		)
+		if err != nil {
+			return pugGenerationResponse{}, err
+		}
+		outputContent = content
+
+		jsonCandidate, err = extractJSONFromText(outputContent)
+		if err != nil {
+			lastErr = fmt.Errorf("model output is not JSON: %w", err)
+		} else {
+			jsonCandidate = normalizeGeneratedJSONCandidate(jsonCandidate)
+			lastErr = parsePugGenerationJSONCandidate(jsonCandidate, &output)
+		}
+
+		if lastErr == nil {
+			output.Messages = appendConversationMessagesForResponse(messages, outputContent)
+			output = sanitizePugGenerationResponse(output)
+			return output, nil
+		}
+
+		if !repairEnabled || attempt+1 >= maxAttempts || !isRecoverableGeneratedJSONError(lastErr) {
+			return pugGenerationResponse{}, fmt.Errorf("%w\n%s", lastErr, jsonCandidate)
+		}
+
+		messages = append(messages, cerebrasChatMessage{
+			Role:    "assistant",
+			Content: outputContent,
+		}, cerebrasChatMessage{
+			Role:    "user",
+			Content: buildPugGenerationRepairPrompt(outputContent, jsonCandidate, lastErr),
+		})
+	}
+
+	return pugGenerationResponse{}, fmt.Errorf("%w\n%s", lastErr, outputContent)
 }
 
 func callImageInspiration(ctx context.Context, input inspirationRequest) (generationResponse, error) {
@@ -1841,6 +2070,86 @@ func buildCerebrasRequestMessages(input generationRequest) []cerebrasChatMessage
 	return messages
 }
 
+func buildCerebrasDataGenerationMessages(input dataGenerationRequest) []cerebrasChatMessage {
+	messages := make([]cerebrasChatMessage, 0, len(input.Messages)+2)
+	systemMessage := buildDataGenerationSystemPrompt(input)
+	if strings.TrimSpace(systemMessage) != "" {
+		messages = append(messages, cerebrasChatMessage{
+			Role:    "system",
+			Content: systemMessage,
+		})
+	}
+
+	for _, message := range input.Messages {
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		if role != "user" && role != "assistant" {
+			continue;
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		messages = append(messages, cerebrasChatMessage{
+			Role:    role,
+			Content: content,
+		})
+	}
+
+	userPrompt := strings.TrimSpace(input.Prompt)
+	if userPrompt == "" {
+		return messages
+	}
+
+	if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
+		messages = append(messages, cerebrasChatMessage{
+			Role:    "user",
+			Content: userPrompt,
+		})
+	}
+
+	return messages
+}
+
+func buildCerebrasPugGenerationMessages(input pugGenerationRequest) []cerebrasChatMessage {
+	messages := make([]cerebrasChatMessage, 0, len(input.Messages)+2)
+	systemMessage := buildPugGenerationSystemPrompt(input)
+	if strings.TrimSpace(systemMessage) != "" {
+		messages = append(messages, cerebrasChatMessage{
+			Role:    "system",
+			Content: systemMessage,
+		})
+	}
+
+	for _, message := range input.Messages {
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		messages = append(messages, cerebrasChatMessage{
+			Role:    role,
+			Content: content,
+		})
+	}
+
+	userPrompt := strings.TrimSpace(input.Prompt)
+	if userPrompt == "" {
+		return messages
+	}
+
+	if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
+		messages = append(messages, cerebrasChatMessage{
+			Role:    "user",
+			Content: userPrompt,
+		})
+	}
+
+	return messages
+}
+
 func appendConversationMessagesForResponse(messages []cerebrasChatMessage, assistantRawContent string) []cerebrasChatMessage {
 	history := make([]cerebrasChatMessage, 0, len(messages)+1)
 	for _, message := range messages {
@@ -1867,6 +2176,106 @@ func appendConversationMessagesForResponse(messages []cerebrasChatMessage, assis
 		Content: responseContent,
 	})
 	return history
+}
+
+func buildDataGenerationSystemPrompt(input dataGenerationRequest) string {
+	currentData := map[string]interface{}{}
+	if input.CurrentData != nil {
+		switch value := input.CurrentData.(type) {
+		case map[string]interface{}:
+			currentData = value
+		default:
+			rawData, _ := json.Marshal(input.CurrentData)
+			if len(rawData) > 0 && len(rawData) < 1<<20 {
+				var fallback map[string]interface{}
+				if err := json.Unmarshal(rawData, &fallback); err == nil {
+					currentData = fallback
+				}
+			}
+		}
+	}
+	currentDataJSON, _ := json.Marshal(currentData)
+
+	template := loadDataGenerationSystemPromptTemplate()
+	parts := []string{template}
+
+	if input.Context != nil {
+		if input.Context.Locale != "" {
+			parts = append(parts, "Locale: "+input.Context.Locale+".")
+		}
+		if input.Context.Theme != "" {
+			parts = append(parts, "Theme: "+input.Context.Theme+".")
+		}
+		if input.Context.TargetDensity != "" {
+			parts = append(parts, "Target density: "+input.Context.TargetDensity+".")
+		}
+		if len(input.Context.EnabledPacks) > 0 {
+			parts = append(parts, "Enabled packs: "+strings.Join(input.Context.EnabledPacks, ", ")+".")
+		}
+	}
+
+	currentPug := strings.TrimSpace(input.CurrentPug)
+	if currentPug != "" {
+		parts = append(parts, "Current screen pug:")
+		parts = append(parts, currentPug)
+	}
+	parts = append(parts, "Current data object:")
+	parts = append(parts, strings.TrimSpace(string(currentDataJSON)))
+	parts = append(parts, "User request: "+strings.TrimSpace(input.Prompt))
+
+	return strings.Join(parts, " ")
+}
+
+func buildPugGenerationSystemPrompt(input pugGenerationRequest) string {
+	currentData := map[string]interface{}{}
+	if input.CurrentData != nil {
+		switch value := input.CurrentData.(type) {
+		case map[string]interface{}:
+			currentData = value
+		default:
+			rawData, _ := json.Marshal(input.CurrentData)
+			if len(rawData) > 0 && len(rawData) < 1<<20 {
+				var fallback map[string]interface{}
+				if err := json.Unmarshal(rawData, &fallback); err == nil {
+					currentData = fallback
+				}
+			}
+		}
+	}
+	currentDataJSON, _ := json.Marshal(currentData)
+
+	template := loadPugGenerationSystemPromptTemplate()
+	parts := []string{template}
+
+	if input.Context != nil {
+		if input.Context.Locale != "" {
+			parts = append(parts, "Locale: "+input.Context.Locale+".")
+		}
+		if input.Context.Theme != "" {
+			parts = append(parts, "Theme: "+input.Context.Theme+".")
+		}
+		if input.Context.TargetDensity != "" {
+			parts = append(parts, "Target density: "+input.Context.TargetDensity+".")
+		}
+		if len(input.Context.EnabledPacks) > 0 {
+			parts = append(parts, "Enabled packs: "+strings.Join(input.Context.EnabledPacks, ", ")+".")
+		}
+	}
+
+	currentPug := strings.TrimSpace(input.CurrentPug)
+	if currentPug != "" {
+		parts = append(parts, "Current screen pug:")
+		parts = append(parts, currentPug)
+	}
+	if css := strings.TrimSpace(input.CurrentCss); css != "" {
+		parts = append(parts, "Current screen css:")
+		parts = append(parts, css)
+	}
+	parts = append(parts, "Current data object:")
+	parts = append(parts, strings.TrimSpace(string(currentDataJSON)))
+	parts = append(parts, "User request: "+strings.TrimSpace(input.Prompt))
+
+	return strings.Join(parts, " ")
 }
 
 func normalizeGeneratedPug(raw string) string {
@@ -2152,6 +2561,37 @@ css must be valid plain CSS (no nested syntax, no preprocessors, no trailing com
 data can be an object with any example values used by the screen.`
 }
 
+func defaultDataGenerationSystemPromptTemplate() string {
+	return `You are a JSON data generation agent for an existing Vue screen implementation.
+Return exactly one JSON object, no markdown, no fences, and no commentary.
+The response must contain only one key: "data".
+The "data" value must be an object used by the screen template.
+Do not include pug or css keys.
+If data contains strings requiring quotes in JSON, escape correctly with backslashes.
+Only output valid JSON.
+Use the current screen context to keep the data compatible with existing bindings.
+`
+}
+
+func defaultPugGenerationSystemPromptTemplate() string {
+	return `You are a Vue screen markup assistant for editing the existing template.
+Return exactly one JSON object, no markdown, no fences, and no commentary.
+The response must contain only one key: "pug".
+Do not include css or data keys.
+Only output valid JSON.
+The "pug" value must be a complete Pug template compatible with Vue and the current bindings.
+Preserve existing component usage and data bindings when feasible, and only apply edits requested by the user.
+If unsure, apply minimal and safe edits.`
+}
+
+func loadDataGenerationSystemPromptTemplate() string {
+	return strings.TrimSpace(defaultDataGenerationSystemPromptTemplate())
+}
+
+func loadPugGenerationSystemPromptTemplate() string {
+	return strings.TrimSpace(defaultPugGenerationSystemPromptTemplate())
+}
+
 func extractJSONFromText(raw string) (string, error) {
 	text := strings.TrimSpace(raw)
 	if text == "" {
@@ -2218,6 +2658,22 @@ func sanitizeGenerationResponse(output generationResponse) generationResponse {
 	output.Pug = normalizeGeneratedPug(output.Pug)
 	if output.Data == nil {
 		output.Data = map[string]interface{}{}
+	}
+	return output
+}
+
+func sanitizeDataGenerationResponse(output dataGenerationResponse) dataGenerationResponse {
+	if output.Data == nil {
+		output.Data = map[string]interface{}{}
+	}
+	return output
+}
+
+func sanitizePugGenerationResponse(output pugGenerationResponse) pugGenerationResponse {
+	output.Pug = strings.TrimSpace(output.Pug)
+	output.Pug = normalizeGeneratedPug(output.Pug)
+	if output.Pug == "" {
+		output.Pug = "div"
 	}
 	return output
 }
@@ -2460,6 +2916,52 @@ func parseGenerationJSONOutput(raw string, output *generationResponse) error {
 	return parseGenerationJSONCandidate(raw, output)
 }
 
+func parseDataGenerationJSONCandidate(raw string, output *dataGenerationResponse) error {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return err
+	}
+
+	data, ok := parsed["data"]
+	if !ok {
+		return fmt.Errorf("missing \"data\"")
+	}
+	if data == nil {
+		data = map[string]interface{}{}
+	}
+
+	if _, ok := data.(map[string]interface{}); !ok {
+		return errors.New(`"data" must be an object`)
+	}
+
+	*output = dataGenerationResponse{
+		Data: data,
+	}
+	return nil
+}
+
+func parsePugGenerationJSONCandidate(raw string, output *pugGenerationResponse) error {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return err
+	}
+
+	pugValue, ok := parsed["pug"]
+	if !ok {
+		return fmt.Errorf("missing \"pug\"")
+	}
+	pug, casted := pugValue.(string)
+	if !casted {
+		return fmt.Errorf(`"pug" must be a string`)
+	}
+
+	pug = strings.TrimSpace(pug)
+	*output = pugGenerationResponse{
+		Pug: pug,
+	}
+	return nil
+}
+
 func normalizeGeneratedJSONCandidate(raw string) string {
 	text := sanitizeJSONCandidate(raw)
 	return strings.TrimSpace(text)
@@ -2511,6 +3013,44 @@ Rules:
 - Keep exactly the keys "pug", "css", and "data" only.
 - If CSS or Pug text requires double quotes, escape them as JSON string quotes.
 - In CSS, avoid quoted property names such as "max-width"; use max-width instead.
+Error: %s
+Raw output to repair:
+%s
+Normalized candidate used for parsing:
+%s`, errText, rawOutput, normalizedCandidate)
+}
+
+func buildDataGenerationRepairPrompt(rawOutput string, normalizedCandidate string, parseErr error) string {
+	errText := "invalid JSON output"
+	if parseErr != nil {
+		errText = strings.TrimSpace(parseErr.Error())
+	}
+
+	return fmt.Sprintf(`The previous assistant output was not valid JSON for the data-generation contract.
+Return only one valid JSON object with the key "data".
+Rules:
+- No markdown, no fences, no comments, no extra text.
+- Keep exactly the key "data" only.
+- The "data" value must be a JSON object.
+Error: %s
+Raw output to repair:
+%s
+Normalized candidate used for parsing:
+%s`, errText, rawOutput, normalizedCandidate)
+}
+
+func buildPugGenerationRepairPrompt(rawOutput string, normalizedCandidate string, parseErr error) string {
+	errText := "invalid JSON output"
+	if parseErr != nil {
+		errText = strings.TrimSpace(parseErr.Error())
+	}
+
+	return fmt.Sprintf(`The previous assistant output was not valid JSON for the pug-generation contract.
+Return only one valid JSON object with the key "pug".
+Rules:
+- No markdown, no fences, no comments, no extra text.
+- Keep exactly the key "pug" only.
+- The "pug" value must be a string with a full, valid template.
 Error: %s
 Raw output to repair:
 %s

@@ -19,6 +19,8 @@ import {
   type GenerationMessage,
   type InspirationRequest,
   type GenerationPipelineResult,
+  type DataGenerationRequest,
+  type PugGenerationRequest,
 } from './services/generationPipelineService';
 import {
   buildGeneratedScreen,
@@ -93,6 +95,18 @@ interface UXRecommendationBubble {
   requestText: string;
 }
 
+interface DataGenerationHistoryEntry {
+  instruction: string;
+  previousData: unknown;
+  previousMessages: GenerationMessage[];
+}
+
+interface PugGenerationHistoryEntry {
+  instruction: string;
+  previousPug: string;
+  previousMessages: GenerationMessage[];
+}
+
 const promptText: Ref<string> = ref('');
 const promptInput = ref<HTMLTextAreaElement | null>(null);
 const conversation: Ref<ChatMessage[]> = ref([]);
@@ -110,6 +124,26 @@ const isSaving = ref(false);
 const lastGeneratedOutput = ref<GenerationPipelineResult | null>(null);
 const isHydratingSession = ref(false);
 const isScreenDirty = ref(false);
+const isDataEditorVisible = ref(false);
+const dataEditorJson = ref('{}');
+const dataEditorError = ref('');
+const isApplyingData = ref(false);
+const isApplyingDataGeneration = ref(false);
+const dataInstructionText = ref('');
+const dataGenerationError = ref('');
+const dataGenerationHistory = ref<DataGenerationHistoryEntry[]>([]);
+const dataGenerationRedoStack = ref<string[]>([]);
+const dataGenerationConversation = ref<GenerationMessage[]>([]);
+const isPugEditorVisible = ref(false);
+const isApplyingPug = ref(false);
+const pugInstructionText = ref('');
+const pugEditorPug = ref('');
+const pugEditorError = ref('');
+const isApplyingPugGeneration = ref(false);
+const pugGenerationError = ref('');
+const pugGenerationHistory = ref<PugGenerationHistoryEntry[]>([]);
+const pugGenerationRedoStack = ref<string[]>([]);
+const pugGenerationConversation = ref<GenerationMessage[]>([]);
 const explodingBubbleId = ref<string | null>(null);
 const uxEvaluationStatus = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
 const uxEvaluationMessage = ref('');
@@ -169,6 +203,213 @@ function getThemeByOffset(offset: number) {
   }
   const nextIndex = (index + offset + themeOptions.length) % themeOptions.length;
   return themeOptions[nextIndex];
+}
+
+function formatScreenDataForEditor(data: unknown) {
+  try {
+    return JSON.stringify(data ?? {}, null, 2);
+  } catch (_error) {
+    return '{}';
+  }
+}
+
+function cloneDataValue(value: unknown) {
+  try {
+    return JSON.parse(JSON.stringify(value ?? {}));
+  } catch (_error) {
+    return {};
+  }
+}
+
+function clearDataGenerationHistory() {
+  dataGenerationHistory.value = [];
+  dataGenerationRedoStack.value = [];
+  dataGenerationConversation.value = [];
+  dataGenerationError.value = '';
+}
+
+function clearPugGenerationHistory() {
+  pugGenerationHistory.value = [];
+  pugGenerationRedoStack.value = [];
+  pugGenerationConversation.value = [];
+  pugGenerationError.value = '';
+  pugInstructionText.value = '';
+}
+
+function buildPugGenerationContext() {
+  return {
+    locale: navigator.language || 'es-ES',
+    theme: activeTheme.value,
+    targetDensity: 'compact',
+    enabledPacks: ['advanced-inputs', 'files', 'charts'],
+  };
+}
+
+function openDataEditor() {
+  const output = lastGeneratedOutput.value;
+  if (!output) {
+    message.value = 'No hay una pantalla generada para editar.';
+    return;
+  }
+  dataEditorJson.value = formatScreenDataForEditor(output.data);
+  dataEditorError.value = '';
+  dataGenerationError.value = '';
+  isDataEditorVisible.value = true;
+}
+
+function openPugEditor() {
+  const output = lastGeneratedOutput.value;
+  if (!output) {
+    message.value = 'No hay una pantalla generada para editar el pug.';
+    return;
+  }
+  pugEditorPug.value = output.sourcePug ?? '';
+  pugEditorError.value = '';
+  pugGenerationError.value = '';
+  if (pugGenerationConversation.value.length === 0) {
+    pugGenerationConversation.value = toApiMessages(conversation.value);
+  }
+  isPugEditorVisible.value = true;
+}
+
+function closeDataEditor() {
+  isDataEditorVisible.value = false;
+  dataEditorError.value = '';
+  dataEditorJson.value = '';
+}
+
+function closePugEditor() {
+  isPugEditorVisible.value = false;
+  pugEditorError.value = '';
+  pugEditorPug.value = '';
+}
+
+async function applyDataToCurrentOutput(parsedData: unknown) {
+  const output = lastGeneratedOutput.value;
+  if (!output || !generatedState.value) {
+    message.value = 'No hay una pantalla cargada para aplicar los cambios.';
+    return;
+  }
+
+  const nextStyleId = `pipeline-runtime-data-${screenRevision.value + 1}`;
+  const updatedOutput: GenerationPipelineResult = {
+    ...output,
+    data: parsedData === undefined ? {} : parsedData,
+  };
+
+  const previousStyleCleanup = cleanupStyle.value;
+  const renderedView = await buildGeneratedScreen(updatedOutput, {
+    componentLoaders,
+    styleId: nextStyleId,
+  });
+
+  cleanupStyle.value = renderedView.installStyles;
+  generatedState.value = {
+    view: renderedView,
+    component: renderedView.component,
+  };
+  generatedComponent.value = markRaw(renderedView.component);
+  lastGeneratedOutput.value = updatedOutput;
+  screenRevision.value += 1;
+  isScreenDirty.value = true;
+
+  if (previousStyleCleanup) {
+    previousStyleCleanup();
+  }
+}
+
+async function applyDataEditorChanges() {
+  if (!isDataEditorVisible.value || isApplyingData.value) {
+    return;
+  }
+  const output = lastGeneratedOutput.value;
+  if (!output || !generatedState.value) {
+    message.value = 'No hay una pantalla cargada para aplicar los cambios.';
+    return;
+  }
+
+  isApplyingData.value = true;
+  dataEditorError.value = '';
+
+  try {
+    const parsedData = JSON.parse(dataEditorJson.value);
+    await applyDataToCurrentOutput(parsedData);
+    clearDataGenerationHistory();
+    isDataEditorVisible.value = false;
+    message.value = 'Data actualizada en el estado actual de la pantalla.';
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      dataEditorError.value = 'JSON inválido. Corrige el formato antes de aplicar.';
+      return;
+    }
+    dataEditorError.value = error instanceof Error ? error.message : 'No se pudo aplicar la data.';
+    message.value = dataEditorError.value;
+  } finally {
+    isApplyingData.value = false;
+  }
+}
+
+async function applyPugToCurrentOutput(pugTemplate: string) {
+  const output = lastGeneratedOutput.value;
+  if (!output || !generatedState.value) {
+    message.value = 'No hay una pantalla cargada para aplicar los cambios.';
+    return;
+  }
+
+  const nextStyleId = `pipeline-runtime-data-${screenRevision.value + 1}`;
+  const pipelineOutput = await pipelineService.renderFromStoredState({
+    pug: pugTemplate,
+    css: output.css ?? '',
+    data: output.data,
+    messages: output.messages,
+  });
+  const previousStyleCleanup = cleanupStyle.value;
+  const renderedView = await buildGeneratedScreen(pipelineOutput, {
+    componentLoaders,
+    styleId: nextStyleId,
+  });
+
+  cleanupStyle.value = renderedView.installStyles;
+  generatedState.value = {
+    view: renderedView,
+    component: renderedView.component,
+  };
+  generatedComponent.value = markRaw(renderedView.component);
+  lastGeneratedOutput.value = pipelineOutput;
+  screenRevision.value += 1;
+  isScreenDirty.value = true;
+
+  if (previousStyleCleanup) {
+    previousStyleCleanup();
+  }
+}
+
+async function applyPugEditorChanges() {
+  if (!isPugEditorVisible.value || isApplyingPug.value) {
+    return;
+  }
+
+  const output = lastGeneratedOutput.value;
+  if (!output || !generatedState.value) {
+    message.value = 'No hay una pantalla cargada para aplicar los cambios.';
+    return;
+  }
+
+  isApplyingPug.value = true;
+  pugEditorError.value = '';
+
+  try {
+    await applyPugToCurrentOutput(pugEditorPug.value);
+    clearPugGenerationHistory();
+    isPugEditorVisible.value = false;
+    message.value = 'Pug actualizado en el estado actual de la pantalla.';
+    isScreenDirty.value = true;
+  } catch (error) {
+    pugEditorError.value = error instanceof Error ? error.message : 'No se pudo aplicar el pug.';
+    message.value = pugEditorError.value;
+  } finally {
+    isApplyingPug.value = false;
+  }
 }
 
 function switchTheme(direction: ThemeDirection) {
@@ -368,6 +609,22 @@ function syncConversationFromBackend(messages: GenerationMessage[]) {
   conversation.value = normalized;
 }
 
+function buildDataGenerationContext() {
+  return {
+    locale: navigator.language || 'es-ES',
+    theme: activeTheme.value,
+    targetDensity: 'compact',
+    enabledPacks: ['advanced-inputs', 'files', 'charts'],
+  };
+}
+
+function popRedoInstruction(): string {
+  if (dataGenerationHistory.value.length > 0) {
+    return dataGenerationHistory.value[dataGenerationHistory.value.length - 1]?.instruction ?? '';
+  }
+  return dataGenerationRedoStack.value.pop() ?? '';
+}
+
 function clearGeneratedState(reason = 'Pantalla vacía. Genera para visualizar.'){ 
   if (cleanupStyle.value) {
     cleanupStyle.value();
@@ -384,6 +641,8 @@ function resetForEmptyScreen(reason = 'Pantalla nueva vacía. Genera para visual
   clearGeneratedState(reason);
   conversation.value = [];
   uxEvaluations.value = [];
+  clearDataGenerationHistory();
+  clearPugGenerationHistory();
 }
 
 function getFallbackScreenIdForDeletion(removedScreenId: string): string | null {
@@ -407,6 +666,8 @@ async function hydrateFromSessionState(state: SessionScreenState | null) {
     conversation.value = [];
     uxEvaluations.value = [];
     didUseInspiration.value = false;
+    clearPugGenerationHistory();
+    clearDataGenerationHistory();
     return;
   }
 
@@ -440,6 +701,8 @@ async function hydrateFromSessionState(state: SessionScreenState | null) {
   message.value = renderedView.missingComponents.length
     ? `Pantalla restaurada con componentes faltantes: ${renderedView.missingComponents.join(', ')}`
     : 'Pantalla restaurada correctamente.';
+  clearDataGenerationHistory();
+  clearPugGenerationHistory();
 }
 
 async function refreshScreensFromSession() {
@@ -672,6 +935,8 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
     };
     generatedComponent.value = markRaw(renderedView.component);
     lastGeneratedOutput.value = pipelineOutput;
+    clearDataGenerationHistory();
+    clearPugGenerationHistory();
     screenRevision.value += 1;
 
     if (previousStyleCleanup) {
@@ -792,6 +1057,222 @@ async function runGenerationFromPrompt(prompt: string) {
   promptText.value = '';
   await renderPipeline(normalizedPrompt, conversation.value);
   focusPromptTextarea();
+}
+
+function canGenerateDataWithAI(): boolean {
+  return !!lastGeneratedOutput.value && !isApplyingDataGeneration.value && !isGenerating.value;
+}
+
+async function generateDataWithPrompt(prompt: string) {
+  const output = lastGeneratedOutput.value;
+  if (!output) {
+    dataGenerationError.value = 'No hay una pantalla cargada para actualizar data.';
+    message.value = dataGenerationError.value;
+    return;
+  }
+  if (!canGenerateDataWithAI()) {
+    return;
+  }
+
+  const normalizedPrompt = prompt.trim();
+  if (!normalizedPrompt) {
+    dataGenerationError.value = 'La instrucción no puede estar vacía.';
+    return;
+  }
+
+  isApplyingDataGeneration.value = true;
+  dataGenerationError.value = '';
+
+  const previousData = cloneDataValue(output.data);
+  const payload: DataGenerationRequest = {
+    prompt: normalizedPrompt,
+    currentPug: output.sourcePug,
+    currentData: cloneDataValue(output.data),
+    context: buildDataGenerationContext(),
+    messages: dataGenerationConversation.value,
+  };
+
+  try {
+    const result = await pipelineService.generateData(payload);
+    const updatedData = cloneDataValue(result.data);
+    await applyDataToCurrentOutput(updatedData);
+    dataEditorJson.value = formatScreenDataForEditor(updatedData);
+    dataGenerationHistory.value.push({
+      instruction: normalizedPrompt,
+      previousData,
+      previousMessages: dataGenerationConversation.value.map((entry) => ({
+        role: entry.role,
+        content: entry.content,
+      })),
+    });
+    dataGenerationRedoStack.value = [];
+    if (result.messages.length > 0) {
+      dataGenerationConversation.value = result.messages;
+    }
+    dataGenerationError.value = '';
+    message.value = 'JSON actualizado con IA y reaplicado en la pantalla actual.';
+  } catch (error) {
+    dataGenerationError.value = error instanceof Error ? error.message : 'No se pudo actualizar la data con IA.';
+    message.value = dataGenerationError.value;
+  } finally {
+    isApplyingDataGeneration.value = false;
+  }
+}
+
+async function onGenerateDataFromPrompt() {
+  await generateDataWithPrompt(dataInstructionText.value);
+}
+
+async function onRedoDataGeneration() {
+  const instruction = popRedoInstruction();
+  if (!instruction) {
+    message.value = 'No hay una instrucción para volver a ejecutar.';
+    return;
+  }
+  if (!canGenerateDataWithAI()) {
+    return;
+  }
+
+  dataInstructionText.value = instruction;
+  await onGenerateDataFromPrompt();
+}
+
+async function rollbackDataGeneration() {
+  if (!lastGeneratedOutput.value || isApplyingDataGeneration.value) {
+    return;
+  }
+
+  const entry = dataGenerationHistory.value.pop();
+  if (!entry) {
+    message.value = 'No hay cambios de data de IA para deshacer.';
+    return;
+  }
+
+  dataGenerationRedoStack.value.push(entry.instruction);
+  dataGenerationConversation.value = entry.previousMessages.map((message) => ({ ...message }));
+
+  try {
+    await applyDataToCurrentOutput(entry.previousData);
+    dataEditorJson.value = formatScreenDataForEditor(entry.previousData);
+    message.value = 'Se descartó el último cambio de data por IA.';
+  } catch (_error) {
+    message.value = 'No se pudo deshacer el último cambio de data.';
+  }
+}
+
+function canGeneratePugWithAI(): boolean {
+  return !!lastGeneratedOutput.value && !isApplyingPugGeneration.value && !isGenerating.value;
+}
+
+function popPugRedoInstruction(): string {
+  if (pugGenerationHistory.value.length > 0) {
+    return pugGenerationHistory.value[pugGenerationHistory.value.length - 1]?.instruction ?? '';
+  }
+  return pugGenerationRedoStack.value.pop() ?? '';
+}
+
+async function generatePugWithPrompt(prompt: string) {
+  const output = lastGeneratedOutput.value;
+  if (!output) {
+    pugGenerationError.value = 'No hay una pantalla cargada para actualizar el pug.';
+    message.value = pugGenerationError.value;
+    return;
+  }
+  if (!canGeneratePugWithAI()) {
+    return;
+  }
+
+  const normalizedPrompt = prompt.trim();
+  if (!normalizedPrompt) {
+    pugGenerationError.value = 'La instrucción para el pug no puede estar vacía.';
+    return;
+  }
+
+  isApplyingPugGeneration.value = true;
+  pugGenerationError.value = '';
+
+  const previousPug = output.sourcePug ?? '';
+  const payload: PugGenerationRequest = {
+    prompt: normalizedPrompt,
+    currentPug: output.sourcePug,
+    currentCss: output.css ?? '',
+    currentData: cloneDataValue(output.data),
+    context: buildPugGenerationContext(),
+    messages: pugGenerationConversation.value,
+  };
+
+  try {
+    const result = await pipelineService.generatePug(payload);
+    const updatedPug = (result.pug ?? '').toString();
+    await applyPugToCurrentOutput(updatedPug);
+    pugEditorPug.value = updatedPug;
+
+    pugGenerationHistory.value.push({
+      instruction: normalizedPrompt,
+      previousPug,
+      previousMessages: pugGenerationConversation.value.map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+    });
+    pugGenerationRedoStack.value = [];
+    if (result.messages.length > 0) {
+      pugGenerationConversation.value = result.messages;
+      syncConversationFromBackend(result.messages);
+    }
+
+    pugGenerationError.value = '';
+    message.value = 'Pug actualizado con IA y reaplicado en la pantalla actual.';
+    isPugEditorVisible.value = false;
+  } catch (error) {
+    pugGenerationError.value = error instanceof Error ? error.message : 'No se pudo actualizar el pug con IA.';
+    message.value = pugGenerationError.value;
+  } finally {
+    isApplyingPugGeneration.value = false;
+  }
+}
+
+async function onGeneratePugFromPrompt() {
+  await generatePugWithPrompt(pugInstructionText.value);
+}
+
+async function onRedoPugGeneration() {
+  const instruction = popPugRedoInstruction();
+  if (!instruction) {
+    message.value = 'No hay una instrucción para volver a ejecutar.';
+    return;
+  }
+  if (!canGeneratePugWithAI()) {
+    return;
+  }
+
+  pugInstructionText.value = instruction;
+  await onGeneratePugFromPrompt();
+}
+
+async function rollbackPugGeneration() {
+  if (!lastGeneratedOutput.value || isApplyingPugGeneration.value) {
+    return;
+  }
+
+  const entry = pugGenerationHistory.value.pop();
+  if (!entry) {
+    message.value = 'No hay cambios de pug de IA para deshacer.';
+    return;
+  }
+
+  pugGenerationRedoStack.value.push(entry.instruction);
+  pugGenerationConversation.value = entry.previousMessages.map((message) => ({ ...message }));
+
+  try {
+    await applyPugToCurrentOutput(entry.previousPug);
+    pugEditorPug.value = entry.previousPug;
+    syncConversationFromBackend(pugGenerationConversation.value);
+    message.value = 'Se descartó el último cambio de pug por IA.';
+    isPugEditorVisible.value = false;
+  } catch (_error) {
+    message.value = 'No se pudo deshacer el último cambio de pug.';
+  }
 }
 
 async function onUxSuggestionClick(suggestion: UXRecommendationBubble) {
@@ -923,6 +1404,22 @@ function onPromptKeydown(event: KeyboardEvent) {
               @click="onSaveCurrentScreenClick"
             >
               {{ isSaving ? 'Guardando...' : 'Guardar' }}
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="!generatedComponent || isGenerating || isApplyingData || isApplyingDataGeneration"
+              @click="openDataEditor"
+            >
+              Editar JSON
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="!generatedComponent || isGenerating || isApplyingPug || isApplyingPugGeneration"
+              @click="openPugEditor"
+            >
+              Editar PUG
             </button>
           </div>
           <div>
@@ -1098,6 +1595,152 @@ function onPromptKeydown(event: KeyboardEvent) {
       </div>
       <p class="prompt-msg">{{ message }}</p>
     </section>
+      <Teleport to="body">
+        <div v-if="isDataEditorVisible" class="data-editor-overlay" @click.self="closeDataEditor">
+          <div class="data-editor-modal" role="dialog" aria-modal="true" aria-label="Editor de data JSON">
+            <header class="data-editor-header">
+              <h3>Editar data JSON</h3>
+              <button
+                type="button"
+                class="data-editor-close"
+                :disabled="isApplyingData"
+                @click="closeDataEditor"
+              >
+                Cerrar
+              </button>
+            </header>
+            <label class="data-editor-input-label" for="dataInstructionInput">Instrucción para IA</label>
+            <textarea
+              id="dataInstructionInput"
+              v-model="dataInstructionText"
+              rows="3"
+              class="data-editor-instruction-textarea"
+              placeholder="Ej: Agrega 3 productos al arreglo de productos"
+              :disabled="isApplyingDataGeneration || isApplyingData"
+            ></textarea>
+            <div class="data-editor-inline-actions">
+              <button
+                type="button"
+                class="screen-action-btn"
+                :disabled="isApplyingDataGeneration || isGenerating || !dataInstructionText.trim().length"
+                @click="onGenerateDataFromPrompt"
+              >
+                {{ isApplyingDataGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
+              </button>
+              <button
+                type="button"
+                class="screen-action-btn"
+                :disabled="isApplyingDataGeneration || dataGenerationHistory.length === 0"
+                @click="rollbackDataGeneration"
+              >
+                Rollback
+              </button>
+              <button
+                type="button"
+                class="screen-action-btn"
+                :disabled="isApplyingDataGeneration || (dataGenerationHistory.length === 0 && dataGenerationRedoStack.length === 0)"
+                @click="onRedoDataGeneration"
+              >
+                Re-do
+              </button>
+            </div>
+            <p v-if="dataGenerationError" class="data-editor-error">{{ dataGenerationError }}</p>
+            <textarea
+              v-model="dataEditorJson"
+              rows="14"
+              class="data-editor-textarea"
+              :disabled="isApplyingData"
+            ></textarea>
+            <p v-if="dataEditorError" class="data-editor-error">{{ dataEditorError }}</p>
+            <div class="data-editor-actions">
+              <button type="button" class="screen-action-btn" :disabled="isApplyingData" @click="closeDataEditor">
+                Cancelar
+              </button>
+              <button
+                type="button"
+                class="screen-action-btn data-editor-apply-btn"
+                :disabled="isApplyingData || !dataEditorJson.trim().length"
+                @click="applyDataEditorChanges"
+              >
+                {{ isApplyingData ? 'Aplicando...' : 'Aplicar cambios' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
+      <Teleport to="body">
+        <div v-if="isPugEditorVisible" class="data-editor-overlay" @click.self="closePugEditor">
+          <div class="data-editor-modal" role="dialog" aria-modal="true" aria-label="Editor de pug">
+            <header class="data-editor-header">
+              <h3>Editar PUG</h3>
+              <button
+                type="button"
+                class="data-editor-close"
+                :disabled="isApplyingPug"
+                @click="closePugEditor"
+              >
+                Cerrar
+              </button>
+            </header>
+            <label class="data-editor-input-label" for="pugInstructionInput">Instrucción para IA</label>
+            <textarea
+              id="pugInstructionInput"
+              v-model="pugInstructionText"
+              rows="3"
+              class="data-editor-instruction-textarea"
+              placeholder="Ej: Sustituye el formulario actual por una tabla con paginación"
+              :disabled="isApplyingPugGeneration || isApplyingPug"
+            ></textarea>
+            <div class="data-editor-inline-actions">
+              <button
+                type="button"
+                class="screen-action-btn"
+                :disabled="isApplyingPugGeneration || isGenerating || !pugInstructionText.trim().length"
+                @click="onGeneratePugFromPrompt"
+              >
+                {{ isApplyingPugGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
+              </button>
+              <button
+                type="button"
+                class="screen-action-btn"
+                :disabled="isApplyingPugGeneration || pugGenerationHistory.length === 0"
+                @click="rollbackPugGeneration"
+              >
+                Rollback
+              </button>
+              <button
+                type="button"
+                class="screen-action-btn"
+                :disabled="isApplyingPugGeneration || (pugGenerationHistory.length === 0 && pugGenerationRedoStack.length === 0)"
+                @click="onRedoPugGeneration"
+              >
+                Re-do
+              </button>
+            </div>
+            <p v-if="pugGenerationError" class="data-editor-error">{{ pugGenerationError }}</p>
+            <textarea
+              v-model="pugEditorPug"
+              rows="14"
+              class="data-editor-textarea"
+              :disabled="isApplyingPug"
+            ></textarea>
+            <p v-if="pugEditorError" class="data-editor-error">{{ pugEditorError }}</p>
+            <div class="data-editor-actions">
+              <button type="button" class="screen-action-btn" :disabled="isApplyingPug" @click="closePugEditor">
+                Cancelar
+              </button>
+              <button
+                type="button"
+                class="screen-action-btn data-editor-apply-btn"
+                :disabled="isApplyingPug || !pugEditorPug.trim().length"
+                @click="applyPugEditorChanges"
+              >
+                {{ isApplyingPug ? 'Aplicando...' : 'Aplicar cambios' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
   </main>
 </template>
 
@@ -1691,6 +2334,125 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .floating-prompt .conversation-toggle-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.1);
+}
+
+.data-editor-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 14, 28, 0.76);
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.data-editor-modal {
+  width: min(760px, calc(100vw - 2.5rem));
+  max-height: calc(100vh - 2.5rem);
+  background: #11162b;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.75rem;
+  color: #f5f8ff;
+}
+
+.data-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.data-editor-close {
+  border: 0;
+  border-radius: 8px;
+  background: #0e152f;
+  color: #f4f7ff;
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+}
+
+.data-editor-close:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.data-editor-textarea {
+  margin: 0;
+  width: 100%;
+  min-height: 260px;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+  background: #0d142e;
+  color: #f5f6ff;
+  padding: 0.65rem;
+  font-family: 'Fira Code', Menlo, Monaco, Consolas, 'Courier New', monospace;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  box-sizing: border-box;
+}
+
+.data-editor-input-label {
+  margin-bottom: -0.4rem;
+  color: #d5ddff;
+  font-size: 0.9rem;
+}
+
+.data-editor-instruction-textarea {
+  width: 100%;
+  margin: 0;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+  background: #0d142e;
+  color: #f5f6ff;
+  padding: 0.65rem;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  box-sizing: border-box;
+}
+
+.data-editor-inline-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.data-editor-inline-actions .screen-action-btn {
+  width: auto;
+  min-width: 120px;
+  margin: 0;
+}
+
+.data-editor-error {
+  margin: 0;
+  color: #ff6f6f;
+  font-size: 0.9rem;
+}
+
+.data-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+.data-editor-actions .screen-action-btn {
+  width: auto;
+  margin-top: 0;
+  min-width: 120px;
+}
+
+.data-editor-apply-btn {
+  background: #5f9dff;
+}
+
+.data-editor-apply-btn:hover:not(:disabled) {
+  background: #7ab0ff;
 }
 
 .prompt-actions {
