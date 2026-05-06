@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/hex"
@@ -81,6 +82,19 @@ func main() {
 	}
 
 	svc := registry.NewRegistryService(storagePath)
+	sessionDBPath := strings.TrimSpace(os.Getenv("SCREEN_SESSION_DB_PATH"))
+	if sessionDBPath == "" {
+		sessionDBPath = defaultSessionDatabasePath
+	}
+	sessionStore, err := newSessionProjectStore(sessionDBPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		if closeErr := sessionStore.Close(); closeErr != nil {
+			log.Printf("failed to close session store: %v", closeErr)
+		}
+	}()
 
 	mux := http.NewServeMux()
 
@@ -107,6 +121,174 @@ func main() {
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+	}))
+
+	mux.HandleFunc("/api/session", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		snapshot, err := sessionStore.getSnapshot(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, snapshot)
+	}))
+
+	mux.HandleFunc("/api/session/", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		subPath := strings.TrimPrefix(r.URL.Path, "/api/session/")
+
+		project, err := sessionStore.getDefaultProject(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+
+		switch {
+		case subPath == "theme":
+			if r.Method != http.MethodPatch {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var payload struct {
+				Theme string `json:"theme"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+				return
+			}
+			if err := sessionStore.setTheme(r.Context(), project.ID, payload.Theme); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			updated, err := sessionStore.getDefaultProject(r.Context())
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"projectId": updated.ID, "theme": updated.Theme})
+			return
+
+		case subPath == "screens":
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var payload struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+				return
+			}
+			screen, err := sessionStore.createScreen(r.Context(), project.ID, payload.Name)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusCreated, screen)
+			return
+		}
+
+		if strings.HasPrefix(subPath, "screens/") {
+			screenPath := strings.TrimPrefix(subPath, "screens/")
+			parts := strings.Split(screenPath, "/")
+			screenID := strings.TrimSpace(parts[0])
+			if screenID == "" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+
+			if len(parts) == 2 && parts[1] == "activate" {
+				if r.Method != http.MethodPatch {
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				if err := sessionStore.activateScreen(r.Context(), project.ID, screenID); err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						writeJSON(w, http.StatusNotFound, map[string]string{"error": "screen not found"})
+						return
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusNoContent, map[string]string{"status": "ok"})
+				return
+			}
+
+			if r.Method == http.MethodDelete && len(parts) == 1 {
+				if err := sessionStore.deleteScreen(r.Context(), project.ID, screenID); err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						writeJSON(w, http.StatusNotFound, map[string]string{"error": "screen not found"})
+						return
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
+			if len(parts) == 2 && parts[1] == "state" && r.Method == http.MethodPost {
+				var payload saveScreenStateRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+					return
+				}
+				state, err := sessionStore.saveState(r.Context(), project.ID, screenID, payload)
+				if err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						writeJSON(w, http.StatusNotFound, map[string]string{"error": "screen not found"})
+						return
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusCreated, state)
+				return
+			}
+
+			if len(parts) == 3 && parts[1] == "state" && parts[2] == "latest" && r.Method == http.MethodGet {
+				state, err := sessionStore.getLatestState(r.Context(), screenID)
+				if err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						writeJSON(w, http.StatusNotFound, map[string]string{"error": "no state found"})
+						return
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, state)
+				return
+			}
+
+			if len(parts) == 2 && parts[1] == "state" && r.Method == http.MethodGet {
+				limit := 20
+				if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+					value, parseErr := strconv.Atoi(rawLimit)
+					if parseErr != nil {
+						writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
+						return
+					}
+					limit = value
+				}
+
+				items, err := sessionStore.listScreenStates(r.Context(), project.ID, screenID, limit)
+				if err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						writeJSON(w, http.StatusNotFound, map[string]string{"error": "screen not found"})
+						return
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"items": items})
+				return
+			}
+		}
+
+		w.WriteHeader(http.StatusNotFound)
 	}))
 
 	mux.HandleFunc("/api/component-registry/", withCORS(func(w http.ResponseWriter, r *http.Request) {

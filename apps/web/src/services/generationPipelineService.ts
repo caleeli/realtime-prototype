@@ -1120,6 +1120,18 @@ export class GenerationPipelineService {
     return this.renderPipelineOutput(output, catalog);
   }
 
+  async renderFromStoredState(
+    output: { pug: string; css: string; data: unknown; messages?: GenerationMessage[] },
+  ): Promise<GenerationPipelineResult> {
+    return this.renderPipelineOutput(
+      {
+        ...output,
+        messages: output.messages ?? [],
+      },
+      undefined,
+    );
+  }
+
   private async renderPipelineOutput(
     output: { pug: string; css: string; data: unknown; messages: GenerationMessage[] },
     catalog?: ComponentInventoryItem[],

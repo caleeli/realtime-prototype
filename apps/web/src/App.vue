@@ -18,14 +18,23 @@ import {
   type UXEvaluatorResultLine,
   type GenerationMessage,
   type InspirationRequest,
+  type GenerationPipelineResult,
 } from './services/generationPipelineService';
 import {
   buildGeneratedScreen,
   type GeneratedScreenView,
   type GenerationRenderOptions,
 } from './services/generationRenderService';
+import {
+  ProjectSessionService,
+  type SessionScreenSummary,
+  type SessionScreenState,
+} from './services/projectSessionService';
 
 const pipelineService = new GenerationPipelineService({
+  baseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api',
+});
+const sessionService = new ProjectSessionService({
   baseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api',
 });
 
@@ -94,6 +103,13 @@ const message = ref('Escribe una descripción y pulsa "Generar pantalla".');
 const generatedState: Ref<GeneratedViewState | null> = ref(null);
 const generatedComponent: Ref<Component | null> = ref(null);
 const uxEvaluations: Ref<UXEvaluatorResultLine[]> = ref([]);
+const screens = ref<SessionScreenSummary[]>([]);
+const activeScreenId = ref('');
+const isSessionLoading = ref(false);
+const isSaving = ref(false);
+const lastGeneratedOutput = ref<GenerationPipelineResult | null>(null);
+const isHydratingSession = ref(false);
+const isScreenDirty = ref(false);
 const explodingBubbleId = ref<string | null>(null);
 const uxEvaluationStatus = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
 const uxEvaluationMessage = ref('');
@@ -264,12 +280,35 @@ function applyThemeRuntime(theme: string) {
   document.head.appendChild(styleLink);
 }
 
-watch(activeTheme, (theme) => {
+watch(activeTheme, async (theme) => {
   applyThemeRuntime(theme);
+
+  if (isHydratingSession.value) {
+    return;
+  }
+
+  try {
+    await sessionService.updateTheme(theme);
+  } catch (_error) {
+    // Keep UI resilient; theme remains local if persistence fails.
+  }
 });
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener('keydown', isThemeHotkey);
+  try {
+    isHydratingSession.value = true;
+    await restoreLastSession();
+  } catch (_error) {
+    message.value = 'No se pudo cargar la última sesión.';
+    try {
+      await createNewScreen();
+    } catch (_createError) {
+      clearGeneratedState('No se pudo restaurar ni crear una pantalla. Refresca la página.');
+    }
+  } finally {
+    isHydratingSession.value = false;
+  }
   applyThemeRuntime(activeTheme.value);
 });
 
@@ -329,6 +368,182 @@ function syncConversationFromBackend(messages: GenerationMessage[]) {
   conversation.value = normalized;
 }
 
+function clearGeneratedState(reason = 'Pantalla vacía. Genera para visualizar.'){ 
+  if (cleanupStyle.value) {
+    cleanupStyle.value();
+    cleanupStyle.value = null;
+  }
+  generatedState.value = null;
+  generatedComponent.value = null;
+  lastGeneratedOutput.value = null;
+  isScreenDirty.value = false;
+  message.value = reason;
+}
+
+function resetForEmptyScreen(reason = 'Pantalla nueva vacía. Genera para visualizarla.') {
+  clearGeneratedState(reason);
+  conversation.value = [];
+  uxEvaluations.value = [];
+}
+
+function getFallbackScreenIdForDeletion(removedScreenId: string): string | null {
+  const ordered = [...screens.value];
+  const removedIndex = ordered.findIndex((screen) => screen.id === removedScreenId);
+  if (removedIndex < 0) {
+    return null;
+  }
+  if (ordered.length === 1) {
+    return null;
+  }
+  if (removedIndex + 1 < ordered.length) {
+    return ordered[removedIndex + 1].id;
+  }
+  return ordered[removedIndex - 1].id;
+}
+
+async function hydrateFromSessionState(state: SessionScreenState | null) {
+  if (!state) {
+    clearGeneratedState('Esta pantalla aún no tiene estado guardado. Genera una versión para persistirla.');
+    conversation.value = [];
+    uxEvaluations.value = [];
+    return;
+  }
+
+  const pipelineOutput = await pipelineService.renderFromStoredState({
+    pug: state.screenPayload.sourcePug || '',
+    css: state.screenPayload.css || '',
+    data: state.screenPayload.data,
+    messages: state.screenPayload.messages,
+  });
+
+  const renderedView = await buildGeneratedScreen(pipelineOutput, {
+    componentLoaders,
+    styleId: `pipeline-runtime-restored-${screenRevision.value + 1}`,
+  });
+
+  if (cleanupStyle.value) {
+    cleanupStyle.value();
+  }
+  cleanupStyle.value = renderedView.installStyles;
+  generatedState.value = {
+    view: renderedView,
+    component: renderedView.component,
+  };
+  generatedComponent.value = markRaw(renderedView.component);
+  screenRevision.value += 1;
+  lastGeneratedOutput.value = pipelineOutput;
+  conversation.value = normalizeChatMessages(state.conversation as ChatMessage[]);
+  uxEvaluations.value = state.recommendations || [];
+  isScreenDirty.value = false;
+  message.value = renderedView.missingComponents.length
+    ? `Pantalla restaurada con componentes faltantes: ${renderedView.missingComponents.join(', ')}`
+    : 'Pantalla restaurada correctamente.';
+}
+
+async function refreshScreensFromSession() {
+  const session = await sessionService.getSession();
+  screens.value = session.screens || [];
+  if (session.theme && session.theme !== activeTheme.value) {
+    activeTheme.value = session.theme;
+  }
+  return session;
+}
+
+type OpenScreenOptions = { force?: boolean };
+
+async function openScreen(screenId: string, options: OpenScreenOptions = {}) {
+  const trimmed = screenId.trim();
+  if (!trimmed || (isSessionLoading.value && !options.force)) {
+    return;
+  }
+
+  isSessionLoading.value = true;
+  try {
+    resetForEmptyScreen('Cargando pantalla...');
+    await sessionService.activateScreen(trimmed);
+    activeScreenId.value = trimmed;
+    const state = await sessionService.loadLatestState(trimmed);
+    await hydrateFromSessionState(state);
+    const session = await refreshScreensFromSession();
+    screens.value = session.screens || screens.value;
+    isScreenDirty.value = state === null && screens.value.find((screen) => screen.id === trimmed)?.lastRevision === 0;
+    activeScreenId.value = trimmed;
+  } finally {
+    isSessionLoading.value = false;
+  }
+}
+
+async function restoreLastSession() {
+  try {
+    const session = await refreshScreensFromSession();
+    activeTheme.value = session.theme || activeTheme.value;
+    if (session.activeScreenId) {
+      activeScreenId.value = session.activeScreenId;
+      await hydrateFromSessionState(session.activeState);
+    } else if (screens.value.length > 0) {
+      await openScreen(screens.value[0]?.id ?? '');
+    } else {
+      await createNewScreen();
+    }
+    didUseInspiration.value = false;
+    isScreenDirty.value = screens.value.find((screen) => screen.id === activeScreenId.value)?.lastRevision === 0;
+  } catch (_error) {
+    message.value = 'No se pudo cargar la sesión. Iniciando con pantalla limpia.';
+    await createNewScreen();
+  }
+}
+
+async function createNewScreen() {
+  const nextIndex = screens.value.length + 1;
+  const screenName = `Pantalla ${nextIndex}`;
+  resetForEmptyScreen('Nueva pantalla creada. Genera contenido para empezar.');
+  const created = await sessionService.createScreen(screenName);
+  const session = await refreshScreensFromSession();
+  screens.value = session.screens || screens.value;
+  activeScreenId.value = created.id;
+  await openScreen(created.id, { force: true });
+  isScreenDirty.value = false;
+}
+
+async function saveCurrentScreen() {
+  const currentScreenId = activeScreenId.value.trim();
+  if (!currentScreenId) {
+    message.value = 'Crea o selecciona una pantalla antes de guardar.';
+    return;
+  }
+
+  isSaving.value = true;
+  try {
+    const output = lastGeneratedOutput.value;
+    const payload = {
+      conversation: conversation.value.map((entry) => ({
+        role: entry.role,
+        content: entry.content,
+      })),
+      recommendations: uxEvaluations.value,
+      screenPayload: {
+        sourcePug: output?.sourcePug ?? '',
+        css: output?.css ?? '',
+        data: output?.data ?? {},
+        messages: output?.messages ?? buildUserPayloadMessages(conversation.value),
+        metadata: output?.metadata,
+      },
+    };
+
+    await sessionService.saveScreenState(currentScreenId, payload);
+    const session = await refreshScreensFromSession();
+    screens.value = session.screens || screens.value;
+    isScreenDirty.value = false;
+    const activeScreen = screens.value.find((screen) => screen.id === currentScreenId);
+    if (activeScreen) {
+      activeScreen.lastRevision += 1;
+    }
+    message.value = 'Estado de pantalla guardado.';
+  } finally {
+    isSaving.value = false;
+  }
+}
+
 function parseUxRecommendation(observation: string) {
   const trimmed = observation.trim();
   const match = trimmed.match(/^\s*\[?\s*(high|medium|low)\s*\]?\s*(?:-|:)?\s*(.*)$/i);
@@ -371,6 +586,13 @@ const actionableUxRecommendations = computed<UXRecommendationBubble[]>(() => {
     })
     .filter((entry): entry is UXRecommendationBubble => entry !== null);
 });
+
+function getScreenSaveState(screen: SessionScreenSummary) {
+  if (screen.id === activeScreenId.value && isScreenDirty.value) {
+    return 'sin guardar';
+  }
+  return screen.lastRevision > 0 ? 'guardada' : 'sin guardar';
+}
 
 function buildUserPayloadMessages(history: ChatMessage[]): GenerationMessage[] {
   return toApiMessages(history);
@@ -448,6 +670,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
       component: renderedView.component,
     };
     generatedComponent.value = markRaw(renderedView.component);
+    lastGeneratedOutput.value = pipelineOutput;
     screenRevision.value += 1;
 
     if (previousStyleCleanup) {
@@ -457,6 +680,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
     message.value = renderedView.missingComponents.length
       ? `Pantalla renderizada con componentes faltantes: ${renderedView.missingComponents.join(', ')}`
       : 'Pantalla renderizada correctamente.';
+  isScreenDirty.value = true;
   } catch (error) {
     message.value = error instanceof Error ? error.message : 'No se pudo generar la pantalla.';
   } finally {
@@ -474,6 +698,84 @@ async function onGenerate() {
   }
 
   await runGenerationFromPrompt(trimmed);
+}
+
+async function onCreateScreenClick() {
+  if (isSessionLoading.value || isSaving.value || isGenerating.value) {
+    return;
+  }
+  try {
+    isSessionLoading.value = true;
+    await createNewScreen();
+    message.value = 'Pantalla creada.';
+  } catch (_error) {
+    message.value = 'No se pudo crear la pantalla.';
+  } finally {
+    isSessionLoading.value = false;
+  }
+}
+
+async function onDeleteScreenClick() {
+  const targetScreenId = activeScreenId.value.trim();
+  if (!targetScreenId || isSessionLoading.value || isSaving.value || isGenerating.value) {
+    return;
+  }
+
+  const targetScreen = screens.value.find((screen) => screen.id === targetScreenId);
+  const confirmMessage = `¿Eliminar "${targetScreen?.name ?? 'esta pantalla'}"? Esta acción no se puede deshacer.`;
+  if (!window.confirm(confirmMessage)) {
+    return;
+  }
+
+  isSessionLoading.value = true;
+  try {
+    const nextScreenId = getFallbackScreenIdForDeletion(targetScreenId);
+    await sessionService.deleteScreen(targetScreenId);
+    const session = await refreshScreensFromSession();
+    screens.value = session.screens || [];
+    resetForEmptyScreen('Pantalla eliminada. Selecciona o crea otra pantalla.');
+
+    if (screens.value.length === 0) {
+      await createNewScreen();
+      return;
+    }
+
+    const target = nextScreenId && screens.value.some((screen) => screen.id === nextScreenId) ? nextScreenId : screens.value[0]?.id;
+    if (!target) {
+      await createNewScreen();
+      return;
+    }
+
+    activeScreenId.value = target;
+    await openScreen(target, { force: true });
+    message.value = 'Pantalla eliminada.';
+  } catch (_error) {
+    message.value = 'No se pudo eliminar la pantalla.';
+  } finally {
+    isSessionLoading.value = false;
+  }
+}
+
+async function onSaveCurrentScreenClick() {
+  if (isSaving.value || isGenerating.value) {
+    return;
+  }
+  try {
+    await saveCurrentScreen();
+  } catch (_error) {
+    message.value = 'No se pudo guardar la pantalla.';
+  }
+}
+
+async function onSelectScreenChange() {
+  if (!activeScreenId.value) {
+    return;
+  }
+  try {
+    await openScreen(activeScreenId.value);
+  } catch (_error) {
+    message.value = 'No se pudo abrir la pantalla.';
+  }
 }
 
 async function runGenerationFromPrompt(prompt: string) {
@@ -588,6 +890,40 @@ function onPromptKeydown(event: KeyboardEvent) {
     <section class="canvas-wrap">
       <header class="canvas-header">
         <div class="canvas-header-top">
+          <div class="screen-toolbar">
+            <label>
+              Pantallas
+              <select
+                v-model="activeScreenId"
+                class="screen-select"
+                :disabled="isSessionLoading || isSaving || screens.length === 0"
+                @change="onSelectScreenChange"
+              >
+                <option v-for="screen in screens" :key="screen.id" :value="screen.id">
+                  {{ screen.name }} ({{ getScreenSaveState(screen) }})
+                </option>
+              </select>
+            </label>
+            <button type="button" class="screen-action-btn" :disabled="isSessionLoading || isSaving" @click="onCreateScreenClick">
+              + Nueva
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isSessionLoading || isSaving || !activeScreenId"
+              @click="onDeleteScreenClick"
+            >
+              Eliminar
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isSessionLoading || isSaving || !activeScreenId"
+              @click="onSaveCurrentScreenClick"
+            >
+              {{ isSaving ? 'Guardando...' : 'Guardar' }}
+            </button>
+          </div>
           <div>
             <h1>Builder Editor</h1>
             <p>Genera pantallas con IA y las dibuja en vivo en el canvas.</p>
@@ -798,6 +1134,44 @@ function onPromptKeydown(event: KeyboardEvent) {
   gap: 1rem;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.screen-toolbar {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  flex-wrap: wrap;
+  color: #e4e9ff;
+}
+
+.screen-select {
+  margin-left: 0.45rem;
+  min-width: 170px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  background: #0e152f;
+  color: #f4f7ff;
+  padding: 0.38rem 0.56rem;
+}
+
+.screen-action-btn {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  min-width: 86px;
+  background: #0e152f;
+  color: #f4f7ff;
+  height: 2rem;
+  padding: 0.38rem 0.6rem;
+  cursor: pointer;
+}
+
+.screen-action-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.screen-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .theme-control {
