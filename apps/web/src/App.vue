@@ -406,6 +406,7 @@ async function hydrateFromSessionState(state: SessionScreenState | null) {
     clearGeneratedState('Esta pantalla aún no tiene estado guardado. Genera una versión para persistirla.');
     conversation.value = [];
     uxEvaluations.value = [];
+    didUseInspiration.value = false;
     return;
   }
 
@@ -435,6 +436,7 @@ async function hydrateFromSessionState(state: SessionScreenState | null) {
   conversation.value = normalizeChatMessages(state.conversation as ChatMessage[]);
   uxEvaluations.value = state.recommendations || [];
   isScreenDirty.value = false;
+  didUseInspiration.value = state.conversation.length > 0;
   message.value = renderedView.missingComponents.length
     ? `Pantalla restaurada con componentes faltantes: ${renderedView.missingComponents.join(', ')}`
     : 'Pantalla restaurada correctamente.';
@@ -485,7 +487,6 @@ async function restoreLastSession() {
     } else {
       await createNewScreen();
     }
-    didUseInspiration.value = false;
     isScreenDirty.value = screens.value.find((screen) => screen.id === activeScreenId.value)?.lastRevision === 0;
   } catch (_error) {
     message.value = 'No se pudo cargar la sesión. Iniciando con pantalla limpia.';

@@ -885,12 +885,11 @@ func callImageInspiration(ctx context.Context, input inspirationRequest) (genera
 		return generationResponse{}, fmt.Errorf("invalid generated output: %w", err)
 	}
 	output.Messages = appendConversationMessagesForResponse(
-		[]cerebrasChatMessage{
-			{
-				Role:    "user",
-				Content: strings.TrimSpace(input.Prompt),
-			},
-		},
+		buildCerebrasRequestMessages(generationRequest{
+			Prompt:   strings.TrimSpace(input.Prompt),
+			Context:  input.Context,
+			Messages: input.Messages,
+		}),
 		visionContent,
 	)
 	return output, nil
