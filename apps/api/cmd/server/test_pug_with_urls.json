@@ -1,0 +1,126 @@
+{
+  "pug": "div.kanban-board.d-flex.flex-nowrap\n  .lane.d-flex.flex-column(role=\\\"list\\\" aria-label=\\\"TO DO\\\")\n    h5.lane-title TO DO\n    div.user-group(v-for=\\\"user in tickets.TODO\\\" :key=\\\"user.id\\\")\n      div.card(:class=\\\"{'high-priority': card.priorityIcon === 'flag-fill'}\\\" v-for=\\\"card in user.cards\\\" :key=\\\"card.id\\\")\n        .card-header\n          .title {{ card.title }}\n        .card-meta.d-flex.align-items-center.mt-2\n          b-avatar(size=\\\"32\\\" src=\\\"https://i.pravatar.cc/300\\\" :title=\\\"card.assignee\\\" :aria-label=\\\"'Assignee: ' + card.assignee\\\" role=\\\"img\\\" class=\\\"bordered-avatar\\\")\n          .assignee-name.ms-2.text-muted {{ card.assignee }}\n        .card-details.d-flex.justify-content-between.align-items-center.mt-2\n          .badge.bg-secondary.text-nowrap {{ card.epic }}\n          .ticket-info.d-flex.align-items-center\n            i.bi(:class=\\\"'bi-' + card.typeIcon\\\" aria-label=\\\"'Ticket type: ' + card.typeIcon\\\")\n              span.visually-hidden {{ card.typeIcon }}\n            span.ms-1.code {{ card.code }}\n            i.bi(:class=\\\"'bi-' + card.priorityIcon\\\" aria-label=\\\"'Priority: ' + card.priorityIcon\\\")\n              span.visually-hidden {{ card.priorityIcon }}\n  .lane.d-flex.flex-column(role=\\\"list\\\" aria-label=\\\"IN PROGRESS\\\")\n    h5.lane-title IN PROGRESS\n    div.user-group(v-for=\\\"user in tickets.IN_PROGRESS\\\" :key=\\\"user.id\\\")\n      div.card(:class=\\\"{'high-priority': card.priorityIcon === 'flag-fill'}\\\" v-for=\\\"card in user.cards\\\" :key=\\\"card.id\\\")\n        .card-header\n          .title {{ card.title }}\n        .card-meta.d-flex.align-items-center.mt-2\n          b-avatar(size=\\\"32\\\" src=\\\"https://i.pravatar.cc/300\\\" :title=\\\"card.assignee\\\" :aria-label=\\\"'Assignee: ' + card.assignee\\\" role=\\\"img\\\" class=\\\"bordered-avatar\\\")\n          .assignee-name.ms-2.text-muted {{ card.assignee }}\n        .card-details.d-flex.justify-content-between.align-items-center.mt-2\n          .badge.bg-secondary.text-nowrap {{ card.epic }}\n          .ticket-info.d-flex.align-items-center\n            i.bi(:class=\\\"'bi-' + card.typeIcon\\\" aria-label=\\\"'Ticket type: ' + card.typeIcon\\\")\n              span.visually-hidden {{ card.typeIcon }}\n            span.ms-1.code {{ card.code }}\n            i.bi(:class=\\\"'bi-' + card.priorityIcon\\\" aria-label=\\\"'Priority: ' + card.priorityIcon\\\")\n              span.visually-hidden {{ card.priorityIcon }}\n  .lane.d-flex.flex-column(role=\\\"list\\\" aria-label=\\\"CODE REVIEW\\\")\n    h5.lane-title CODE REVIEW\n    div.user-group(v-for=\\\"user in tickets.CODE_REVIEW\\\" :key=\\\"user.id\\\")\n      div.card(:class=\\\"{'high-priority': card.priorityIcon === 'flag-fill'}\\\" v-for=\\\"card in user.cards\\\" :key=\\\"card.id\\\")\n        .card-header\n          .title {{ card.title }}\n        .card-meta.d-flex.align-items-center.mt-2\n          b-avatar(size=\\\"32\\\" src=\\\"https://i.pravatar.cc/300\\\" :title=\\\"card.assignee\\\" :aria-label=\\\"'Assignee: ' + card.assignee\\\" role=\\\"img\\\" class=\\\"bordered-avatar\\\")\n          .assignee-name.ms-2.text-muted {{ card.assignee }}\n        .card-details.d-flex.justify-content-between.align-items-center.mt-2\n          .badge.bg-secondary.text-nowrap {{ card.epic }}\n          .ticket-info.d-flex.align-items-center\n            i.bi(:class=\\\"'bi-' + card.typeIcon\\\" aria-label=\\\"'Ticket type: ' + card.typeIcon\\\")\n              span.visually-hidden {{ card.typeIcon }}\n            span.ms-1.code {{ card.code }}\n            i.bi(:class=\\\"'bi-' + card.priorityIcon\\\" aria-label=\\\"'Priority: ' + card.priorityIcon\\\")\n              span.visually-hidden {{ card.priorityIcon }}\n  .lane.d-flex.flex-column(role=\\\"list\\\" aria-label=\\\"QA REVIEW\\\")\n    h5.lane-title QA REVIEW\n    div.user-group(v-for=\\\"user in tickets.QA_REVIEW\\\" :key=\\\"user.id\\\")\n      div.card(:class=\\\"{'high-priority': card.priorityIcon === 'flag-fill'}\\\" v-for=\\\"card in user.cards\\\" :key=\\\"card.id\\\")\n        .card-header\n          .title {{ card.title }}\n        .card-meta.d-flex.align-items-center.mt-2\n          b-avatar(size=\\\"32\\\" src=\\\"https://i.pravatar.cc/300\\\" :title=\\\"card.assignee\\\" :aria-label=\\\"'Assignee: ' + card.assignee\\\" role=\\\"img\\\" class=\\\"bordered-avatar\\\")\n          .assignee-name.ms-2.text-muted {{ card.assignee }}\n        .card-details.d-flex.justify-content-between.align-items-center.mt-2\n          .badge.bg-secondary.text-nowrap {{ card.epic }}\n          .ticket-info.d-flex.align-items-center\n            i.bi(:class=\\\"'bi-' + card.typeIcon\\\" aria-label=\\\"'Ticket type: ' + card.typeIcon\\\")\n              span.visually-hidden {{ card.typeIcon }}\n            span.ms-1.code {{ card.code }}\n            i.bi(:class=\\\"'bi-' + card.priorityIcon\\\" aria-label=\\\"'Priority: ' + card.priorityIcon\\\")\n              span.visually-hidden {{ card.priorityIcon }}\n  .lane.d-flex.flex-column(role=\\\"list\\\" aria-label=\\\"READY FOR RELEASE\\\")\n    h5.lane-title READY FOR RELEASE\n    div.user-group(v-for=\\\"user in tickets.READY_FOR_RELEASE\\\" :key=\\\"user.id\\\")\n      div.card(:class=\\\"{'high-priority': card.priorityIcon === 'flag-fill'}\\\" v-for=\\\"card in user.cards\\\" :key=\\\"card.id\\\")\n        .card-header\n          .title {{ card.title }}\n        .card-meta.d-flex.align-items-center.mt-2\n          b-avatar(size=\\\"32\\\" src=\\\"https://i.pravatar.cc/300\\\" :title=\\\"card.assignee\\\" :aria-label=\\\"'Assignee: ' + card.assignee\\\" role=\\\"img\\\" class=\\\"bordered-avatar\\\")\n          .assignee-name.ms-2.text-muted {{ card.assignee }}\n        .card-details.d-flex.justify-content-between.align-items-center.mt-2\n          .badge.bg-secondary.text-nowrap {{ card.epic }}\n          .ticket-info.d-flex.align-items-center\n            i.bi(:class=\\\"'bi-' + card.typeIcon\\\" aria-label=\\\"'Ticket type: ' + card.typeIcon\\\")\n              span.visually-hidden {{ card.typeIcon }}\n            span.ms-1.code {{ card.code }}\n            i.bi(:class=\\\"'bi-' + card.priorityIcon\\\" aria-label=\\\"'Priority: ' + card.priorityIcon\\\")\n              span.visually-hidden {{ card.priorityIcon }}\n  .lane.d-flex.flex-column(role=\\\"list\\\" aria-label=\\\"DONE\\\")\n    h5.lane-title DONE\n    div.user-group(v-for=\\\"user in tickets.DONE\\\" :key=\\\"user.id\\\")\n      div.card(:class=\\\"{'high-priority': card.priorityIcon === 'flag-fill'}\\\" v-for=\\\"card in user.cards\\\" :key=\\\"card.id\\\")\n        .card-header\n          .title {{ card.title }}\n        .card-meta.d-flex.align-items-center.mt-2\n          b-avatar(size=\\\"32\\\" src=\\\"https://i.pravatar.cc/300\\\" :title=\\\"card.assignee\\\" :aria-label=\\\"'Assignee: ' + card.assignee\\\" role=\\\"img\\\" class=\\\"bordered-avatar\\\")\n          .assignee-name.ms-2.text-muted {{ card.assignee }}\n        .card-details.d-flex.justify-content-between.align-items-center.mt-2\n          .badge.bg-secondary.text-nowrap {{ card.epic }}\n          .ticket-info.d-flex.align-items-center\n            i.bi(:class=\\\"'bi-' + card.typeIcon\\\" aria-label=\\\"'Ticket type: ' + card.typeIcon\\\")\n               span.visually-hidden {{ card.typeIcon }}\n            span.ms-1.code {{ card.code }}\n            i.bi(:class=\\\"'bi-' + card.priorityIcon\\\" aria-label=\\\"'Priority: ' + card.priorityIcon\\\")\n               span.visually-hidden {{ card.priorityIcon }}",
+  "css": ".kanban-board { overflow-x: auto; padding: 1rem; background: #fafafa; height: 100vh; }\n.lane { min-width: 250px; margin-right: 1rem; border-right: 1px solid #ddd; padding-bottom: 1rem; padding-right: 1rem; background: #f9f9f9; }\n.lane:nth-child(even) { background: #e9f7ff; }\n.lane-title { font-weight: 600; font-size: 1.1rem; margin-bottom: 0.75rem; color: #333; }\n.card { background: #e8f5e9; border-radius: 0.375rem; padding: 0.75rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgb(0 0 0 / 0.1); transition: background 0.3s; }\n.card.high-priority { background: #ffebee; }\n.card-header .title { font-weight: 500; font-size: 1rem; color: #000; }\n.card-meta { margin-top: 0.5rem; }\n.card-details { font-size: 0.85rem; color: #555; margin-top: 0.5rem; }\n.ticket-info i { font-size: 1rem; color: #007bff; }\n.ticket-info .code { font-family: monospace; font-weight: 6:0; margin-left: 0.25rem; }\n.bordered-avatar { border: 2px solid #ccc; }\n.assignee-name { font-size: 0.9rem; color: #555; }\n.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }\n.ticket-info i.bi-flag-fill { color: #ff4d4f; }",
+  "data": {
+    "tickets": {
+      "TODO": [
+        {
+          "id": "user001",
+          "name": "Alice",
+          "cards": [
+            {
+              "id": "card101",
+              "title": "Design new feature",
+              "epic": "Add login",
+              "assignee": "Alice",
+              "typeIcon": "bookmark",
+              "code": "FOUR-30393",
+              "priorityIcon": "flag-fill"
+            },
+            {
+              "id": "card102",
+              "title": "Implement authentication",
+              "epic": "Add login",
+              "assignee": "Alice",
+              "typeIcon": "book",
+              "code": "FOUR-3733B",
+              "priorityIcon": "flag-fill"
+            },
+            {
+              "id": "card103",
+              "title": "Update dependencies",
+              "epic": "Tech task",
+              "assignee": "Alice",
+              "typeIcon": "wrench",
+              "code": "FOUR-33337",
+              "priorityIcon": "flag-fill"
+            }
+          ]
+        }
+      ],
+      "IN_PROGRESS": [
+        {
+          "id": "user002",
+          "name": "Bob",
+          "cards": []
+        }
+      ],
+      "CODE_REVIEW": [
+        {
+          "id": "user003",
+          "name": "Carol",
+          "cards": [
+            {
+              "id": "card201",
+              "title": "Create billing page",
+              "epic": "B2B base",
+              "assignee": "Carol",
+              "typeIcon": "building",
+              "code": "FOUR-33666",
+              "priorityIcon": "flag-fill"
+            },
+            {
+              "id": "card202",
+              "title": "Fix bug major",
+              "epic": "Prod fixes",
+              "assignee": "Dennis",
+              "typeIcon": "bug",
+              "code": "FOUR-37336",
+              "priorityIcon": "flag-fill"
+            }
+          ]
+        }
+      ],
+      "QA_REVIEW": [
+        {
+          "id": "user004",
+          "name": "Dana",
+          "cards": [
+            {
+              "id": "card301",
+              "title": "High mobile rigatci",
+              "epic": "Customer",
+              "assignee": "Dana",
+              "typeIcon": "chat",
+              "code": "FOUR-31556",
+              "priorityIcon": "flag-fill"
+            }
+          ]
+        }
+      ],
+      "READY_FOR_RELEASE": [],
+      "DONE": [
+        {
+          "id": "user003",
+          "name": "Carol",
+          "cards": [
+            {
+              "id": "card401",
+              "title": "Setup CI pipeline",
+              "epic": "Build",
+              "assignee": "Carol",
+              "typeIcon": "gear",
+              "code": "FOUR-33666",
+              "priorityIcon": ""
+            }
+          ]
+        },
+        {
+          "id": "user005",
+          "name": "Evan",
+          "cards": [
+            {
+              "id": "card402",
+              "title": "Refactor components",
+              "epic": "Code cleanup",
+              "assignee": "Evan",
+              "typeIcon": "wrench",
+              "code": "FOUR-31504",
+              "priorityIcon": ""
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

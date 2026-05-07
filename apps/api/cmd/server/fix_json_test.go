@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -75,5 +76,101 @@ func TestParseGenerationJSONCandidateFromRepairedOutput(t *testing.T) {
 	}
 	if _, ok := out.Data.(map[string]interface{}); !ok {
 		t.Fatalf("expected data as map in generated response, got %T", out.Data)
+	}
+}
+
+func TestFixComponentJSONRepairsPugWithImageUrlAttribute(t *testing.T) {
+	raw := `{"pug":"div.kanban-board\n  .lane\n    b-avatar(src=\"https://i.pravatar.cc/300\")","css":".kanban-board { display: flex; }","data":{"cards":[{"assignee":"Alice"}]}}`
+
+	parsed, err := FixComponentJSON(raw)
+	if err != nil {
+		t.Fatalf("expected repair to succeed for URL attribute, got error: %v", err)
+	}
+
+	pug, ok := parsed["pug"].(string)
+	if !ok {
+		t.Fatalf(`expected "pug" as string, got %T`, parsed["pug"])
+	}
+
+	expectedPug := "div.kanban-board\n  .lane\n    b-avatar(src=\"https://i.pravatar.cc/300\")"
+	got := strings.TrimSpace(pug)
+	if got != expectedPug {
+		t.Fatalf("unexpected repaired pug output:\n got: %q\n want: %q", got, expectedPug)
+	}
+
+	if !strings.Contains(got, "https://i.pravatar.cc/300") {
+		t.Fatalf("expected pug output to preserve avatar source URL, got: %q", got)
+	}
+}
+
+func TestFixComponentJSONRepairsFromURLFixtureFile(t *testing.T) {
+	raw, err := os.ReadFile("test_pug_with_urls.json")
+	if err != nil {
+		t.Fatalf("failed to read fixture file: %v", err)
+	}
+
+	parsed, err := FixComponentJSON(string(raw))
+	if err != nil {
+		t.Fatalf("expected fixture json to repair and parse, got error: %v", err)
+	}
+
+	pug, ok := parsed["pug"].(string)
+	if !ok {
+		t.Fatalf(`expected "pug" as string, got %T`, parsed["pug"])
+	}
+
+	css, ok := parsed["css"].(string)
+	if !ok {
+		t.Fatalf(`expected "css" as string, got %T`, parsed["css"])
+	}
+
+	if !strings.Contains(pug, "https://i.pravatar.cc/300") {
+		t.Fatalf("expected repaired pug to preserve avatar URL, got: %q", pug)
+	}
+
+	if !strings.Contains(css, ".kanban-board") {
+		t.Fatalf("expected css to include board styles, got: %q", css)
+	}
+
+	data, ok := parsed["data"].(map[string]interface{})
+	if !ok {
+		t.Fatalf(`expected "data" as map, got %T`, parsed["data"])
+	}
+
+	tickets, ok := data["tickets"].(map[string]interface{})
+	if !ok {
+		t.Fatalf(`expected "tickets" as map inside data, got %T`, data["tickets"])
+	}
+
+	if _, ok := tickets["DONE"]; !ok {
+		t.Fatalf(`expected tickets["DONE"] to exist in fixture data, got %#v`, tickets)
+	}
+}
+
+func TestSanitizeJSONCandidatePreservesURLInPug(t *testing.T) {
+	raw := `{"pug":"div.kanban-board\n  .lane\n    b-avatar(src=\"https://i.pravatar.cc/300\" :title=\"card.assignee\")","css":".kanban-board { display: flex; }","data":{"cards":[{"assignee":"Alice"}]}}`
+
+	sanitized := sanitizeJSONCandidate(raw)
+	if !strings.Contains(sanitized, "https://i.pravatar.cc/300") {
+		t.Fatalf("expected sanitizer to keep URL protocol slashes, got: %q", sanitized)
+	}
+
+	var output generationResponse
+	if err := parseGenerationJSONCandidate(sanitized, &output); err != nil {
+		t.Fatalf("expected sanitized candidate to parse, got: %v", err)
+	}
+
+	css := strings.TrimSpace(output.Css)
+	if !strings.Contains(css, ".kanban-board {") {
+		t.Fatalf("expected css to include board selector, got: %q", css)
+	}
+
+	pug := strings.TrimSpace(output.Pug)
+	if !strings.Contains(pug, "https://i.pravatar.cc/300") {
+		t.Fatalf("expected sanitized candidate to keep avatar URL, got: %q", pug)
+	}
+
+	if output.Pug == "" {
+		t.Fatalf("expected non-empty pug output")
 	}
 }

@@ -3333,13 +3333,80 @@ func sanitizeJSONCandidate(raw string) string {
 		return text
 	}
 
-	text = regexp.MustCompile(`(?m)//.*$`).ReplaceAllString(text, "")
+	text = removeJSONComments(text)
 	text = regexp.MustCompile(`(?s)/\*[\s\S]*?\*/`).ReplaceAllString(text, "")
 	text = regexp.MustCompile(`\bundefined\b`).ReplaceAllString(text, "null")
 	text = regexp.MustCompile(`,(\s*[}\]])`).ReplaceAllString(text, "$1")
 	text = regexp.MustCompile(`([,{]\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*:`).ReplaceAllString(text, `$1"$2":`)
 
 	return strings.TrimSpace(text)
+}
+
+func removeJSONComments(raw string) string {
+	var out strings.Builder
+
+	inString := false
+	inEscape := false
+
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+
+		if inString {
+			out.WriteByte(ch)
+
+			if inEscape {
+				inEscape = false
+				continue
+			}
+			if ch == '\\' {
+				inEscape = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if ch == '"' {
+			inString = true
+			out.WriteByte(ch)
+			continue
+		}
+
+		if ch == '/' && i+1 < len(raw) {
+			next := raw[i+1]
+
+			if next == '/' {
+				for i < len(raw) && raw[i] != '\n' {
+					i++
+				}
+				if i < len(raw) {
+					out.WriteByte(raw[i])
+				}
+				continue
+			}
+
+			if next == '*' {
+				i += 2
+				for i < len(raw)-1 {
+					if raw[i] == '*' && raw[i+1] == '/' {
+						i++
+						break
+					}
+					if raw[i] == '\n' {
+						out.WriteByte('\n')
+					}
+					i++
+				}
+				continue
+			}
+		}
+
+		out.WriteByte(ch)
+	}
+
+	return out.String()
 }
 
 func parseIntFromEnv(key string, fallback int) int {
