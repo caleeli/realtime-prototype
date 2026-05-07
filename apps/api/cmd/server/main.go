@@ -42,6 +42,10 @@ const uxEvaluatorSystemPromptTemplateEnv = "UX_EVALUATOR_SYSTEM_PROMPT_PATH"
 const inspirationConversionPromptTemplatePath = "cmd/server/inspiration-conversion-prompt.txt"
 const inspirationConversionPromptTemplateEnv = "INSPIRATION_CONVERSION_PROMPT_PATH"
 const generationRepairEnabledEnv = "GENERATION_REPAIR_ENABLED"
+const generationChatCompressionEnabledEnv = "GENERATION_CHAT_COMPRESSION_ENABLED"
+const generationChatCompressionMaxPreviousAssistantMessagesEnv = "GENERATION_CHAT_MAX_PREVIOUS_ASSISTANT_MESSAGES"
+const cerebrasReasoningEffortEnv = "CEREBRAS_REASONING_EFFORT"
+const cerebrasTemperatureEnv = "CEREBRAS_TEMPERATURE"
 const inspirationImageProviderEnv = "INSPIRATION_IMAGE_PROVIDER"
 const inspirationVisionProviderEnv = "INSPIRATION_VISION_PROVIDER"
 const inspirationOpenAIImageAPIURL = "INSPIRATION_OPENAI_IMAGE_API_URL"
@@ -633,6 +637,8 @@ type cerebrasChatPayload struct {
 	Model          string                  `json:"model"`
 	Messages       []cerebrasChatMessage   `json:"messages"`
 	ResponseFormat *cerebrasResponseFormat `json:"response_format,omitempty"`
+	ReasoningEffort *string               `json:"reasoning_effort,omitempty"`
+	Temperature     *float64              `json:"temperature,omitempty"`
 }
 
 type cerebrasResponseFormat struct {
@@ -675,7 +681,8 @@ func callCerebrasGeneration(ctx context.Context, input generationRequest) (gener
 
 	timeoutMs := parseIntFromEnv("CEREBRAS_TIMEOUT_MS", 20000)
 	clientTimeout := time.Duration(timeoutMs) * time.Millisecond
-	messages := buildCerebrasRequestMessages(input)
+	messages := buildCerebrasRequestMessagesForResponse(input)
+	requestMessages := compressConversationMessagesForRequest(messages)
 
 	maxAttempts := 1
 	repairEnabled := parseBoolFromEnv(generationRepairEnabledEnv, false)
@@ -695,7 +702,7 @@ func callCerebrasGeneration(ctx context.Context, input generationRequest) (gener
 			model,
 			apiKey,
 			clientTimeout,
-			messages,
+			requestMessages,
 			&cerebrasResponseFormat{
 				Type: "json_object",
 			},
@@ -743,6 +750,7 @@ func callCerebrasGeneration(ctx context.Context, input generationRequest) (gener
 			Role:    "user",
 			Content: buildGenerationRepairPrompt(outputContent, jsonCandidate, lastErr),
 		})
+		requestMessages = compressConversationMessagesForRequest(messages)
 	}
 
 	return generationResponse{}, fmt.Errorf("%w\n%s", lastErr, outputContent)
@@ -765,7 +773,8 @@ func callCerebrasDataGeneration(ctx context.Context, input dataGenerationRequest
 
 	timeoutMs := parseIntFromEnv("CEREBRAS_TIMEOUT_MS", 20000)
 	clientTimeout := time.Duration(timeoutMs) * time.Millisecond
-	messages := buildCerebrasDataGenerationMessages(input)
+	messages := buildCerebrasDataGenerationMessagesForResponse(input)
+	requestMessages := compressConversationMessagesForRequest(messages)
 
 	maxAttempts := 1
 	repairEnabled := parseBoolFromEnv(generationRepairEnabledEnv, false)
@@ -785,7 +794,7 @@ func callCerebrasDataGeneration(ctx context.Context, input dataGenerationRequest
 			model,
 			apiKey,
 			clientTimeout,
-			messages,
+			requestMessages,
 			&cerebrasResponseFormat{
 				Type: "json_object",
 			},
@@ -820,6 +829,7 @@ func callCerebrasDataGeneration(ctx context.Context, input dataGenerationRequest
 			Role:    "user",
 			Content: buildDataGenerationRepairPrompt(outputContent, jsonCandidate, lastErr),
 		})
+		requestMessages = compressConversationMessagesForRequest(messages)
 	}
 
 	return dataGenerationResponse{}, fmt.Errorf("%w\n%s", lastErr, outputContent)
@@ -842,7 +852,8 @@ func callCerebrasPugGeneration(ctx context.Context, input pugGenerationRequest) 
 
 	timeoutMs := parseIntFromEnv("CEREBRAS_TIMEOUT_MS", 20000)
 	clientTimeout := time.Duration(timeoutMs) * time.Millisecond
-	messages := buildCerebrasPugGenerationMessages(input)
+	messages := buildCerebrasPugGenerationMessagesForResponse(input)
+	requestMessages := compressConversationMessagesForRequest(messages)
 
 	maxAttempts := 1
 	repairEnabled := parseBoolFromEnv(generationRepairEnabledEnv, false)
@@ -862,7 +873,7 @@ func callCerebrasPugGeneration(ctx context.Context, input pugGenerationRequest) 
 			model,
 			apiKey,
 			clientTimeout,
-			messages,
+			requestMessages,
 			&cerebrasResponseFormat{
 				Type: "json_object",
 			},
@@ -897,6 +908,7 @@ func callCerebrasPugGeneration(ctx context.Context, input pugGenerationRequest) 
 			Role:    "user",
 			Content: buildPugGenerationRepairPrompt(outputContent, jsonCandidate, lastErr),
 		})
+		requestMessages = compressConversationMessagesForRequest(messages)
 	}
 
 	return pugGenerationResponse{}, fmt.Errorf("%w\n%s", lastErr, outputContent)
@@ -1114,7 +1126,7 @@ func callImageInspiration(ctx context.Context, input inspirationRequest) (genera
 		return generationResponse{}, fmt.Errorf("invalid generated output: %w", err)
 	}
 	output.Messages = appendConversationMessagesForResponse(
-		buildCerebrasRequestMessages(generationRequest{
+		buildCerebrasRequestMessagesForResponse(generationRequest{
 			Prompt:   strings.TrimSpace(input.Prompt),
 			Context:  input.Context,
 			Messages: input.Messages,
@@ -2031,88 +2043,66 @@ func callCerebrasUXEvaluator(ctx context.Context, input uxEvaluatorRequest) (str
 }
 
 func buildCerebrasRequestMessages(input generationRequest) []cerebrasChatMessage {
-	messages := make([]cerebrasChatMessage, 0, len(input.Messages)+2)
-	systemMessage := buildGenerationSystemPrompt(input.Prompt, input.Context)
-	if strings.TrimSpace(systemMessage) != "" {
-		messages = append(messages, cerebrasChatMessage{
-			Role:    "system",
-			Content: systemMessage,
-		})
-	}
-
-	for _, message := range input.Messages {
-		role := strings.ToLower(strings.TrimSpace(message.Role))
-		if role != "user" && role != "assistant" {
-			continue
-		}
-		content := strings.TrimSpace(message.Content)
-		if content == "" {
-			continue
-		}
-		messages = append(messages, cerebrasChatMessage{
-			Role:    role,
-			Content: content,
-		})
-	}
-
-	userPrompt := strings.TrimSpace(input.Prompt)
-	if userPrompt == "" {
-		return messages
-	}
-
-	if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
-		messages = append(messages, cerebrasChatMessage{
-			Role:    "user",
-			Content: userPrompt,
-		})
-	}
-
-	return messages
+	return buildConversationMessagesFromInput(
+		input.Messages,
+		buildGenerationSystemPrompt(input.Prompt, input.Context),
+		input.Prompt,
+		true,
+	)
 }
 
 func buildCerebrasDataGenerationMessages(input dataGenerationRequest) []cerebrasChatMessage {
-	messages := make([]cerebrasChatMessage, 0, len(input.Messages)+2)
-	systemMessage := buildDataGenerationSystemPrompt(input)
-	if strings.TrimSpace(systemMessage) != "" {
-		messages = append(messages, cerebrasChatMessage{
-			Role:    "system",
-			Content: systemMessage,
-		})
-	}
-
-	for _, message := range input.Messages {
-		role := strings.ToLower(strings.TrimSpace(message.Role))
-		if role != "user" && role != "assistant" {
-			continue;
-		}
-		content := strings.TrimSpace(message.Content)
-		if content == "" {
-			continue
-		}
-		messages = append(messages, cerebrasChatMessage{
-			Role:    role,
-			Content: content,
-		})
-	}
-
-	userPrompt := strings.TrimSpace(input.Prompt)
-	if userPrompt == "" {
-		return messages
-	}
-
-	if len(messages) == 0 || messages[len(messages)-1].Role != "user" {
-		messages = append(messages, cerebrasChatMessage{
-			Role:    "user",
-			Content: userPrompt,
-		})
-	}
-
-	return messages
+	return buildConversationMessagesFromInput(
+		input.Messages,
+		buildDataGenerationSystemPrompt(input),
+		input.Prompt,
+		true,
+	)
 }
 
 func buildCerebrasPugGenerationMessages(input pugGenerationRequest) []cerebrasChatMessage {
-	messages := make([]cerebrasChatMessage, 0, len(input.Messages)+2)
-	systemMessage := buildPugGenerationSystemPrompt(input)
+	return buildConversationMessagesFromInput(
+		input.Messages,
+		buildPugGenerationSystemPrompt(input),
+		input.Prompt,
+		true,
+	)
+}
+
+func buildCerebrasRequestMessagesForResponse(input generationRequest) []cerebrasChatMessage {
+	return buildConversationMessagesFromInput(
+		input.Messages,
+		buildGenerationSystemPrompt(input.Prompt, input.Context),
+		input.Prompt,
+		false,
+	)
+}
+
+func buildCerebrasDataGenerationMessagesForResponse(input dataGenerationRequest) []cerebrasChatMessage {
+	return buildConversationMessagesFromInput(
+		input.Messages,
+		buildDataGenerationSystemPrompt(input),
+		input.Prompt,
+		false,
+	)
+}
+
+func buildCerebrasPugGenerationMessagesForResponse(input pugGenerationRequest) []cerebrasChatMessage {
+	return buildConversationMessagesFromInput(
+		input.Messages,
+		buildPugGenerationSystemPrompt(input),
+		input.Prompt,
+		false,
+	)
+}
+
+func buildConversationMessagesFromInput(
+	rawMessages []cerebrasChatMessage,
+	systemMessage string,
+	userPrompt string,
+	compress bool,
+) []cerebrasChatMessage {
+	messages := make([]cerebrasChatMessage, 0, len(rawMessages)+2)
 	if strings.TrimSpace(systemMessage) != "" {
 		messages = append(messages, cerebrasChatMessage{
 			Role:    "system",
@@ -2120,7 +2110,7 @@ func buildCerebrasPugGenerationMessages(input pugGenerationRequest) []cerebrasCh
 		})
 	}
 
-	for _, message := range input.Messages {
+	for _, message := range rawMessages {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
 		if role != "user" && role != "assistant" {
 			continue
@@ -2135,8 +2125,11 @@ func buildCerebrasPugGenerationMessages(input pugGenerationRequest) []cerebrasCh
 		})
 	}
 
-	userPrompt := strings.TrimSpace(input.Prompt)
+	userPrompt = strings.TrimSpace(userPrompt)
 	if userPrompt == "" {
+		if compress {
+			return compressConversationMessagesForRequest(messages)
+		}
 		return messages
 	}
 
@@ -2147,7 +2140,47 @@ func buildCerebrasPugGenerationMessages(input pugGenerationRequest) []cerebrasCh
 		})
 	}
 
-	return messages
+	if !compress {
+		return messages
+	}
+	return compressConversationMessagesForRequest(messages)
+}
+
+func compressConversationMessagesForRequest(messages []cerebrasChatMessage) []cerebrasChatMessage {
+	if !parseBoolFromEnv(generationChatCompressionEnabledEnv, false) {
+		return messages
+	}
+
+	maxPreviousAssistantMessages := parseIntFromEnv(generationChatCompressionMaxPreviousAssistantMessagesEnv, 1)
+	if maxPreviousAssistantMessages <= 0 {
+		return messages
+	}
+
+	assistantIndexes := make([]int, 0, 4)
+	for index, message := range messages {
+		if strings.ToLower(strings.TrimSpace(message.Role)) == "assistant" {
+			assistantIndexes = append(assistantIndexes, index)
+		}
+	}
+	if len(assistantIndexes) <= maxPreviousAssistantMessages {
+		return messages
+	}
+
+	keepFromIndex := assistantIndexes[len(assistantIndexes)-maxPreviousAssistantMessages]
+	compressed := make([]cerebrasChatMessage, 0, len(messages))
+	for index, message := range messages {
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		switch role {
+		case "system", "user":
+			compressed = append(compressed, message)
+		case "assistant":
+			if index >= keepFromIndex {
+				compressed = append(compressed, message)
+			}
+		}
+	}
+
+	return compressed
 }
 
 func appendConversationMessagesForResponse(messages []cerebrasChatMessage, assistantRawContent string) []cerebrasChatMessage {
@@ -2655,11 +2688,30 @@ func decodeLooseJSONOutput(raw string, output *generationResponse) error {
 func sanitizeGenerationResponse(output generationResponse) generationResponse {
 	output.Pug = strings.TrimSpace(output.Pug)
 	output.Css = strings.TrimSpace(output.Css)
+	output.Css = sanitizeGeneratedCSS(output.Css)
 	output.Pug = normalizeGeneratedPug(output.Pug)
 	if output.Data == nil {
 		output.Data = map[string]interface{}{}
 	}
 	return output
+}
+
+func sanitizeGeneratedCSS(raw string) string {
+	css := strings.TrimSpace(raw)
+	if css == "" {
+		return ""
+	}
+
+	css = regexp.MustCompile("(?i)```(?:css)?\\s*").ReplaceAllString(css, "")
+	css = strings.ReplaceAll(css, "```", "")
+	css = strings.TrimSpace(css)
+
+	quotedPropertyPattern := regexp.MustCompile(`([,{;]\s*)\"([^\"]+)\"\s*:`)
+	css = quotedPropertyPattern.ReplaceAllString(css, "$1$2:")
+
+	css = regexp.MustCompile(`,\s*}`).ReplaceAllString(css, ";}")
+
+	return css
 }
 
 func sanitizeDataGenerationResponse(output dataGenerationResponse) dataGenerationResponse {
@@ -3068,9 +3120,14 @@ func requestCerebrasContent(
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	reasoningEffort := parseOptionalStringFromEnv(cerebrasReasoningEffortEnv)
+	temperature := parseOptionalFloatFromEnv(cerebrasTemperatureEnv)
+
 	reqBody := cerebrasChatPayload{
-		Model:    model,
-		Messages: messages,
+		Model:           model,
+		Messages:        messages,
+		ReasoningEffort: reasoningEffort,
+		Temperature:     temperature,
 	}
 	if responseFormat != nil {
 		reqBody.ResponseFormat = responseFormat
@@ -3295,6 +3352,26 @@ func parseIntFromEnv(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func parseOptionalFloatFromEnv(key string) *float64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return nil
+	}
+	return &parsed
+}
+
+func parseOptionalStringFromEnv(key string) *string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func parseBoolFromEnv(key string, fallback bool) bool {

@@ -27,6 +27,8 @@ Después completa al menos:
   - `CEREBRAS_API_KEY` (obligatoria para generación)
   - `CEREBRAS_API_URL` (por defecto)
   - `CEREBRAS_MODEL` (por defecto)
+  - `CEREBRAS_REASONING_EFFORT` (opcional)
+  - `CEREBRAS_TEMPERATURE` (opcional)
   - `PORT` (por defecto `3000`)
   - `CORS_ALLOWED_ORIGIN` (por defecto `http://localhost:5173`)
 
