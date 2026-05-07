@@ -114,6 +114,7 @@ interface CssGenerationHistoryEntry {
   previousMessages: GenerationMessage[];
 }
 
+
 const promptText: Ref<string> = ref('');
 const promptInput = ref<HTMLTextAreaElement | null>(null);
 const conversation: Ref<ChatMessage[]> = ref([]);
@@ -993,7 +994,6 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
   uxEvaluations.value = [];
   uxEvaluationStatus.value = 'idle';
   uxEvaluationMessage.value = '';
-
   const previousStyleCleanup = cleanupStyle.value;
   const nextStyleId = `pipeline-runtime-generated-${screenRevision.value + 1}`;
 
@@ -1574,14 +1574,22 @@ async function onRefresh(messageIndex: number) {
   focusPromptTextarea();
 }
 
-function onRollback() {
+async function onRollback() {
   if (isGenerating.value || lastUserMessageIndex.value < 0) {
     return;
   }
 
-  conversation.value = normalizeChatMessages(conversation.value.slice(0, lastUserMessageIndex.value));
-  message.value = 'Rollback aplicado. Escribe un nuevo mensaje del usuario para generar otra respuesta.';
-  focusPromptTextarea();
+  const truncatedConversation = normalizeChatMessages(conversation.value.slice(0, lastUserMessageIndex.value));
+  conversation.value = truncatedConversation;
+
+  const previousUserIndex = lastUserMessageIndex.value;
+  if (previousUserIndex < 0) {
+    clearGeneratedState('Rollback aplicado. Escribe un nuevo mensaje del usuario para generar otra respuesta.');
+    focusPromptTextarea();
+    return;
+  }
+  await onRefresh(previousUserIndex);
+  return;
 }
 
 function focusPromptTextarea() {
