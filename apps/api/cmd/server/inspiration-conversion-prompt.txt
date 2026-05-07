@@ -20,6 +20,7 @@ Inspiration-image composition is preferred for reusable visuals:
 When the screenshot contains identifiable assets (logo, icon, badge, ornament, card art), recreate them as cropped regions of `images/inspiration.png` instead of inventing new artwork.
 
 Guidelines:
+- Prefer to use bootstrap-vue components `b-*`
 - Use a div-based element with class `inspiration` as the base for each cropped fragment.
 - Use `background-image: url(images/inspiration.png);` and `background-repeat: no-repeat;`.
 - Represent crop position with `background-position: -Xpx -Ypx;` where X,Y are top-left pixel coordinates.
@@ -35,6 +36,7 @@ Recommended pattern:
 pug example:
 div.login-screen
   b-form(@submit.prevent="onSubmit")
+    b-avatar(size="4rem")
     b-form-input(v-model="form.username" placeholder="Username")
     b-button(type="submit") Login
   .inspiration.inspiration-logo(role="presentation")
