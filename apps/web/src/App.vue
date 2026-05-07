@@ -18,6 +18,7 @@ import {
   type UXEvaluatorResultLine,
   type GenerationMessage,
   type InspirationRequest,
+  type GenerationRequest,
   type GenerationPipelineResult,
   type DataGenerationRequest,
   type PugGenerationRequest,
@@ -107,6 +108,12 @@ interface PugGenerationHistoryEntry {
   previousMessages: GenerationMessage[];
 }
 
+interface CssGenerationHistoryEntry {
+  instruction: string;
+  previousCss: string;
+  previousMessages: GenerationMessage[];
+}
+
 const promptText: Ref<string> = ref('');
 const promptInput = ref<HTMLTextAreaElement | null>(null);
 const conversation: Ref<ChatMessage[]> = ref([]);
@@ -144,6 +151,16 @@ const pugGenerationError = ref('');
 const pugGenerationHistory = ref<PugGenerationHistoryEntry[]>([]);
 const pugGenerationRedoStack = ref<string[]>([]);
 const pugGenerationConversation = ref<GenerationMessage[]>([]);
+const isCssEditorVisible = ref(false);
+const cssEditorCss = ref('');
+const cssEditorError = ref('');
+const isApplyingCss = ref(false);
+const isApplyingCssGeneration = ref(false);
+const cssInstructionText = ref('');
+const cssGenerationError = ref('');
+const cssGenerationHistory = ref<CssGenerationHistoryEntry[]>([]);
+const cssGenerationRedoStack = ref<string[]>([]);
+const cssGenerationConversation = ref<GenerationMessage[]>([]);
 const explodingBubbleId = ref<string | null>(null);
 const uxEvaluationStatus = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
 const uxEvaluationMessage = ref('');
@@ -236,6 +253,14 @@ function clearPugGenerationHistory() {
   pugInstructionText.value = '';
 }
 
+function clearCssGenerationHistory() {
+  cssGenerationHistory.value = [];
+  cssGenerationRedoStack.value = [];
+  cssGenerationConversation.value = [];
+  cssGenerationError.value = '';
+  cssInstructionText.value = '';
+}
+
 function buildPugGenerationContext() {
   return {
     locale: navigator.language || 'es-ES',
@@ -272,6 +297,22 @@ function openPugEditor() {
   isPugEditorVisible.value = true;
 }
 
+function openCssEditor() {
+  const output = lastGeneratedOutput.value;
+  if (!output) {
+    message.value = 'No hay una pantalla generada para editar el CSS.';
+    return;
+  }
+  cssEditorCss.value = output.css ?? '';
+  cssEditorError.value = '';
+  cssInstructionText.value = '';
+  cssGenerationError.value = '';
+  if (cssGenerationConversation.value.length === 0) {
+    cssGenerationConversation.value = toApiMessages(conversation.value);
+  }
+  isCssEditorVisible.value = true;
+}
+
 function closeDataEditor() {
   isDataEditorVisible.value = false;
   dataEditorError.value = '';
@@ -282,6 +323,12 @@ function closePugEditor() {
   isPugEditorVisible.value = false;
   pugEditorError.value = '';
   pugEditorPug.value = '';
+}
+
+function closeCssEditor() {
+  isCssEditorVisible.value = false;
+  cssEditorError.value = '';
+  cssEditorCss.value = '';
 }
 
 async function applyDataToCurrentOutput(parsedData: unknown) {
@@ -295,6 +342,40 @@ async function applyDataToCurrentOutput(parsedData: unknown) {
   const updatedOutput: GenerationPipelineResult = {
     ...output,
     data: parsedData === undefined ? {} : parsedData,
+  };
+
+  const previousStyleCleanup = cleanupStyle.value;
+  const renderedView = await buildGeneratedScreen(updatedOutput, {
+    componentLoaders,
+    styleId: nextStyleId,
+  });
+
+  cleanupStyle.value = renderedView.installStyles;
+  generatedState.value = {
+    view: renderedView,
+    component: renderedView.component,
+  };
+  generatedComponent.value = markRaw(renderedView.component);
+  lastGeneratedOutput.value = updatedOutput;
+  screenRevision.value += 1;
+  isScreenDirty.value = true;
+
+  if (previousStyleCleanup) {
+    previousStyleCleanup();
+  }
+}
+
+async function applyCssToCurrentOutput(css: string) {
+  const output = lastGeneratedOutput.value;
+  if (!output || !generatedState.value) {
+    message.value = 'No hay una pantalla cargada para aplicar los cambios.';
+    return;
+  }
+
+  const nextStyleId = `pipeline-runtime-css-${screenRevision.value + 1}`;
+  const updatedOutput: GenerationPipelineResult = {
+    ...output,
+    css,
   };
 
   const previousStyleCleanup = cleanupStyle.value;
@@ -409,6 +490,44 @@ async function applyPugEditorChanges() {
     message.value = pugEditorError.value;
   } finally {
     isApplyingPug.value = false;
+  }
+}
+
+async function applyCssEditorChanges() {
+  if (!isCssEditorVisible.value || isApplyingCss.value) {
+    return;
+  }
+
+  const output = lastGeneratedOutput.value;
+  if (!output || !generatedState.value) {
+    message.value = 'No hay una pantalla cargada para aplicar el CSS.';
+    return;
+  }
+
+  isApplyingCss.value = true;
+  cssEditorError.value = '';
+
+  try {
+    await applyCssToCurrentOutput(cssEditorCss.value);
+    clearCssGenerationHistory();
+    conversation.value = normalizeChatMessages([
+      ...conversation.value,
+      {
+        role: 'user',
+        content: 'He actualizado el CSS de la pantalla manualmente.',
+      },
+      {
+        role: 'assistant',
+        content: 'CSS actualizado correctamente.',
+      },
+    ]);
+    isCssEditorVisible.value = false;
+    message.value = 'CSS actualizado en el estado actual de la pantalla.';
+  } catch (error) {
+    cssEditorError.value = error instanceof Error ? error.message : 'No se pudo aplicar el CSS.';
+    message.value = cssEditorError.value;
+  } finally {
+    isApplyingCss.value = false;
   }
 }
 
@@ -643,6 +762,7 @@ function resetForEmptyScreen(reason = 'Pantalla nueva vacía. Genera para visual
   uxEvaluations.value = [];
   clearDataGenerationHistory();
   clearPugGenerationHistory();
+  clearCssGenerationHistory();
 }
 
 function getFallbackScreenIdForDeletion(removedScreenId: string): string | null {
@@ -1160,6 +1280,153 @@ async function rollbackDataGeneration() {
   }
 }
 
+function buildCssGenerationContext() {
+  return {
+    locale: navigator.language || 'es-ES',
+    theme: activeTheme.value,
+    targetDensity: 'compact',
+    enabledPacks: ['advanced-inputs', 'files', 'charts'],
+  };
+}
+
+function canGenerateCssWithAI(): boolean {
+  return (
+    !!lastGeneratedOutput.value &&
+    !isApplyingCssGeneration.value &&
+    !isApplyingCss.value &&
+    !isGenerating.value
+  );
+}
+
+function popCssRedoInstruction(): string {
+  if (cssGenerationHistory.value.length > 0) {
+    return cssGenerationHistory.value[cssGenerationHistory.value.length - 1]?.instruction ?? '';
+  }
+  return cssGenerationRedoStack.value.pop() ?? '';
+}
+
+async function generateCssWithPrompt(prompt: string) {
+  const output = lastGeneratedOutput.value;
+  if (!output) {
+    cssGenerationError.value = 'No hay una pantalla cargada para actualizar el css.';
+    message.value = cssGenerationError.value;
+    return;
+  }
+  if (!canGenerateCssWithAI()) {
+    return;
+  }
+
+  const normalizedPrompt = prompt.trim();
+  if (!normalizedPrompt) {
+    cssGenerationError.value = 'La instrucción para CSS no puede estar vacía.';
+    return;
+  }
+
+  isApplyingCssGeneration.value = true;
+  cssGenerationError.value = '';
+
+  const previousCss = output.css ?? '';
+  const currentCss = output.css ?? '';
+  const requestMessages: GenerationMessage[] = [
+    ...cssGenerationConversation.value,
+    {
+      role: 'user',
+      content: `Actualiza CSS: ${normalizedPrompt}`,
+    },
+  ];
+
+  const payload: GenerationRequest = {
+    prompt: `Actualiza únicamente el CSS de esta pantalla sin cambiar el PUG ni el data.
+
+Instrucción de usuario: ${normalizedPrompt}
+
+CSS actual:
+${currentCss}`,
+    context: buildCssGenerationContext(),
+    messages: requestMessages,
+  };
+
+  try {
+    const result = await pipelineService.generate(payload);
+    const updatedCss = typeof result.css === 'string' ? result.css : '';
+    await applyCssToCurrentOutput(updatedCss);
+    cssEditorCss.value = updatedCss;
+    cssGenerationHistory.value.push({
+      instruction: normalizedPrompt,
+      previousCss,
+      previousMessages: cssGenerationConversation.value.map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+    });
+    cssGenerationRedoStack.value = [];
+    if (result.messages.length > 0) {
+      cssGenerationConversation.value = result.messages;
+      syncConversationFromBackend(result.messages);
+    } else {
+      conversation.value = normalizeChatMessages([
+        ...conversation.value,
+        {
+          role: 'assistant',
+          content: 'CSS actualizado con IA.',
+        },
+      ]);
+    }
+
+    cssGenerationError.value = '';
+    message.value = 'CSS actualizado con IA y reaplicado en la pantalla actual.';
+    isCssEditorVisible.value = true;
+  } catch (error) {
+    cssGenerationError.value = error instanceof Error ? error.message : 'No se pudo actualizar el css con IA.';
+    message.value = cssGenerationError.value;
+  } finally {
+    isApplyingCssGeneration.value = false;
+  }
+}
+
+async function onGenerateCssFromPrompt() {
+  await generateCssWithPrompt(cssInstructionText.value);
+}
+
+async function onRedoCssGeneration() {
+  const instruction = popCssRedoInstruction();
+  if (!instruction) {
+    message.value = 'No hay una instrucción para volver a ejecutar.';
+    return;
+  }
+  if (!canGenerateCssWithAI()) {
+    return;
+  }
+
+  cssInstructionText.value = instruction;
+  await onGenerateCssFromPrompt();
+}
+
+async function rollbackCssGeneration() {
+  if (!lastGeneratedOutput.value || isApplyingCssGeneration.value) {
+    return;
+  }
+
+  const entry = cssGenerationHistory.value.pop();
+  if (!entry) {
+    message.value = 'No hay cambios de css de IA para deshacer.';
+    return;
+  }
+
+  cssGenerationRedoStack.value.push(entry.instruction);
+  cssGenerationConversation.value = entry.previousMessages.map((message) => ({ ...message }));
+
+  try {
+    await applyCssToCurrentOutput(entry.previousCss);
+    cssEditorCss.value = entry.previousCss;
+    syncConversationFromBackend(cssGenerationConversation.value);
+    message.value = 'Se descartó el último cambio de CSS por IA.';
+    isCssEditorVisible.value = false;
+  } catch (_error) {
+    message.value = 'No se pudo deshacer el último cambio de CSS.';
+  }
+}
+
 function canGeneratePugWithAI(): boolean {
   return !!lastGeneratedOutput.value && !isApplyingPugGeneration.value && !isGenerating.value;
 }
@@ -1420,6 +1687,14 @@ function onPromptKeydown(event: KeyboardEvent) {
               @click="openPugEditor"
             >
               Editar PUG
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="!generatedComponent || isGenerating || isApplyingCss || isApplyingCssGeneration"
+              @click="openCssEditor"
+            >
+              Editar CSS
             </button>
           </div>
           <div>
@@ -1736,6 +2011,79 @@ function onPromptKeydown(event: KeyboardEvent) {
                 @click="applyPugEditorChanges"
               >
                 {{ isApplyingPug ? 'Aplicando...' : 'Aplicar cambios' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
+      <Teleport to="body">
+        <div v-if="isCssEditorVisible" class="data-editor-overlay" @click.self="closeCssEditor">
+          <div class="data-editor-modal" role="dialog" aria-modal="true" aria-label="Editor de CSS">
+            <header class="data-editor-header">
+              <h3>Editar CSS</h3>
+              <button
+                type="button"
+                class="data-editor-close"
+                :disabled="isApplyingCss"
+                @click="closeCssEditor"
+              >
+                Cerrar
+              </button>
+            </header>
+            <label class="data-editor-input-label" for="cssInstructionInput">Instrucción para IA</label>
+            <textarea
+              id="cssInstructionInput"
+              v-model="cssInstructionText"
+              rows="3"
+              class="data-editor-instruction-textarea"
+              placeholder="Ej: Cambia el fondo del contenedor principal y mejora la legibilidad de texto"
+              :disabled="isApplyingCssGeneration || isApplyingCss"
+            ></textarea>
+            <div class="data-editor-inline-actions">
+              <button
+                type="button"
+                class="screen-action-btn"
+                :disabled="isApplyingCssGeneration || isGenerating || !cssInstructionText.trim().length"
+                @click="onGenerateCssFromPrompt"
+              >
+                {{ isApplyingCssGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
+              </button>
+              <button
+                type="button"
+                class="screen-action-btn"
+                :disabled="isApplyingCssGeneration || cssGenerationHistory.length === 0"
+                @click="rollbackCssGeneration"
+              >
+                Rollback
+              </button>
+              <button
+                type="button"
+                class="screen-action-btn"
+                :disabled="isApplyingCssGeneration || (cssGenerationHistory.length === 0 && cssGenerationRedoStack.length === 0)"
+                @click="onRedoCssGeneration"
+              >
+                Re-do
+              </button>
+            </div>
+            <p v-if="cssGenerationError" class="data-editor-error">{{ cssGenerationError }}</p>
+            <textarea
+              v-model="cssEditorCss"
+              rows="16"
+              class="data-editor-textarea"
+              :disabled="isApplyingCss"
+            ></textarea>
+            <p v-if="cssEditorError" class="data-editor-error">{{ cssEditorError }}</p>
+            <div class="data-editor-actions">
+              <button type="button" class="screen-action-btn" :disabled="isApplyingCss" @click="closeCssEditor">
+                Cancelar
+              </button>
+              <button
+                type="button"
+                class="screen-action-btn data-editor-apply-btn"
+                :disabled="isApplyingCss"
+                @click="applyCssEditorChanges"
+              >
+                {{ isApplyingCss ? 'Aplicando...' : 'Aplicar cambios' }}
               </button>
             </div>
           </div>

@@ -760,36 +760,58 @@ function sanitizeVueSfcTemplate(raw: string): string {
     .trim();
 }
 
-function isPugTreeEmpty(tree: GenerationPipelineResult['template']): boolean {
-  return tree.children.length === 0;
+function sanitizeGeneratedCss(raw: string): string {
+  if (!raw) {
+    return '';
+  }
+
+  let css = raw.trim();
+  css = css.replace(/```(?:css)?\s*/gi, '');
+  css = css.replace(/```/g, '').trim();
+
+  css = css.replace(/([,{;]\s*)\"([^\"]+)\"\s*:/g, (_match, prefix, property) => `${prefix}${property}:`);
+  css = css.replace(/,\s*}/g, ';}');
+
+  return css;
 }
 
-function installScreenStyles(css: string, styleId: string): () => void {
-  if (typeof window === 'undefined' || typeof document === 'undefined') {
-    return () => undefined;
+function buildGeneratedScreenVNodes(
+  styleContent: string,
+  styleId: string,
+  children: VNode | string | Array<VNode | string>,
+): Array<VNode | string> {
+  const rendered: Array<VNode | string> = [];
+  const normalizedCss = styleContent.trim();
+  if (normalizedCss.length > 0) {
+    rendered.push(
+      h(
+        'style',
+        {
+          id: styleId,
+          'data-generated': 'pipeline-runtime',
+          type: 'text/css',
+        },
+        normalizedCss,
+      ),
+    );
   }
 
-  const existing = document.querySelector<HTMLStyleElement>(`style#${styleId}`);
-  if (existing) {
-    existing.textContent = css;
-    return () => {
-      if (existing.textContent !== '') {
-        existing.textContent = '';
-      }
-    };
+  if (typeof children === 'string') {
+    rendered.push(children);
+    return rendered;
   }
 
-  const styleElement = document.createElement('style');
-  styleElement.id = styleId;
-  styleElement.dataset.generated = 'pipeline';
-  styleElement.textContent = css;
-  document.head.appendChild(styleElement);
+  if (Array.isArray(children)) {
+    rendered.push(...children);
+    return rendered;
+  }
 
-  return () => {
-    if (document.head.contains(styleElement)) {
-      document.head.removeChild(styleElement);
-    }
-  };
+  rendered.push(children);
+  return rendered;
+}
+
+function isPugTreeEmpty(tree: GenerationPipelineResult['template']): boolean {
+  return tree.children.length === 0;
 }
 
 export class GenerationRenderService {
@@ -864,10 +886,10 @@ export class GenerationRenderService {
       ...registry.localComponents,
       ...bootstrapRegistry,
     };
-    const style = output.css || '';
+    const style = sanitizeGeneratedCss(output.css || '');
     const fallbackHtml = sanitizeVueSfcTemplate(output.sourcePug);
-
-    const removeStyles = installScreenStyles(style, this.styleId);
+    const renderNodesWithStyle = (value: VNode | string | Array<VNode | string>) =>
+      buildGeneratedScreenVNodes(style, this.styleId, value);
 
     const component = defineComponent({
       name: 'GeneratedPipelineScreen',
@@ -878,19 +900,17 @@ export class GenerationRenderService {
       setup() {
         if (isPugTreeEmpty(output.template) && fallbackHtml) {
           return () => {
-            return h('div', {
-              class: 'generated-screen',
-              innerHTML: sanitizeVueSfcTemplate(fallbackHtml),
-            });
+            const fallback = sanitizeVueSfcTemplate(fallbackHtml);
+            return h('div', { class: 'generated-screen' }, renderNodesWithStyle(fallback));
           };
         }
 
         const children = collectChildren(output.template, context, componentRegistry);
         return () => {
           if (typeof children === 'string') {
-            return h('div', { class: 'generated-screen' }, [children]);
+            return h('div', { class: 'generated-screen' }, renderNodesWithStyle(children));
           }
-          return h('div', { class: 'generated-screen' }, children);
+          return h('div', { class: 'generated-screen' }, renderNodesWithStyle(children));
         };
       },
     });
@@ -903,7 +923,7 @@ export class GenerationRenderService {
       unresolvedTags: Array.from(new Set([...output.metadata.unresolvedTags, ...registry.unresolved])),
       missingComponents: output.imports.filter((entry) => !entry.isCatalogResolved || !registry.localComponents[entry.tag]).map((entry) => entry.tag),
       styleId: this.styleId,
-      installStyles: removeStyles,
+      installStyles: () => undefined,
     };
   }
 }
