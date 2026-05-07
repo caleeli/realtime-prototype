@@ -12,6 +12,8 @@ import {
   type Ref,
   watch,
 } from 'vue';
+import { VueFlow, Handle, Position } from '@vue-flow/core';
+import '@vue-flow/core/dist/style.css';
 
 import {
   GenerationPipelineService,
@@ -114,6 +116,40 @@ interface CssGenerationHistoryEntry {
   previousMessages: GenerationMessage[];
 }
 
+type FlowTask = {
+  id: string;
+  title: string;
+  screenId: string;
+};
+
+type FlowEdge = {
+  id: string;
+  source: string;
+  target: string;
+};
+
+type FlowNode = {
+  id: string;
+  type: 'flow-task';
+  position: {
+    x: number;
+    y: number;
+  };
+  data: {
+    taskId: string;
+    title: string;
+    screenId: string;
+  };
+};
+
+type FlowTaskPreviewState = {
+  component: Component | null;
+  isLoading: boolean;
+  error: string;
+  screenId: string;
+  cleanup?: (() => void) | null;
+};
+
 
 const promptText: Ref<string> = ref('');
 const promptInput = ref<HTMLTextAreaElement | null>(null);
@@ -162,6 +198,12 @@ const cssGenerationError = ref('');
 const cssGenerationHistory = ref<CssGenerationHistoryEntry[]>([]);
 const cssGenerationRedoStack = ref<string[]>([]);
 const cssGenerationConversation = ref<GenerationMessage[]>([]);
+const isBuilderMinimized = ref(false);
+const flowTaskCounter = ref(1);
+const flowTasks = ref<FlowTask[]>([]);
+const flowEdges = ref<FlowEdge[]>([]);
+const flowTaskPreviews = ref<Record<string, FlowTaskPreviewState>>({});
+const flowNodes = ref<FlowNode[]>([]);
 const explodingBubbleId = ref<string | null>(null);
 const uxEvaluationStatus = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
 const uxEvaluationMessage = ref('');
@@ -213,6 +255,21 @@ const activeThemeLabel = computed(() => {
 });
 
 const themeTransitionKey = computed(() => `${screenRevision.value}-${activeTheme.value}`);
+const FLOW_COLUMNS = 3;
+const FLOW_COLUMN_GAP = 340;
+const FLOW_ROW_GAP = 300;
+
+const flowNodesWithPreviews = computed(() => {
+  const taskLookup = new Map<string, FlowTask>();
+  for (const task of flowTasks.value) {
+    taskLookup.set(task.id, task);
+  }
+  return flowNodes.value.map((node) => ({
+    ...node,
+    task: taskLookup.get(node.id),
+    preview: flowTaskPreviews.value[node.id] ?? null,
+  }));
+});
 
 function getThemeByOffset(offset: number) {
   const index = activeThemeIndex.value;
@@ -260,6 +317,333 @@ function clearCssGenerationHistory() {
   cssGenerationConversation.value = [];
   cssGenerationError.value = '';
   cssInstructionText.value = '';
+}
+
+function getFlowTaskId(): string {
+  const taskId = flowTaskCounter.value;
+  flowTaskCounter.value += 1;
+  return `task-${taskId}`;
+}
+
+function getFlowTaskBaseLabel(index = 1): string {
+  return `Tarea ${index}`;
+}
+
+function buildFlowNodePosition(index: number) {
+  const col = index % FLOW_COLUMNS;
+  const row = Math.floor(index / FLOW_COLUMNS);
+  return {
+    x: col * FLOW_COLUMN_GAP + 24,
+    y: row * FLOW_ROW_GAP + 24,
+  };
+}
+
+function clearFlowTaskPreviews() {
+  for (const state of Object.values(flowTaskPreviews.value)) {
+    if (state.cleanup) {
+      state.cleanup();
+    }
+  }
+  flowTaskPreviews.value = {};
+}
+
+function removeFlowTaskById(taskId: string) {
+  const nextTasks = flowTasks.value.filter((task) => task.id !== taskId);
+  const nextPreviews = { ...flowTaskPreviews.value };
+  const cleanup = nextPreviews[taskId]?.cleanup;
+  if (cleanup) {
+    cleanup();
+  }
+  delete nextPreviews[taskId];
+  flowTaskPreviews.value = nextPreviews;
+  flowNodes.value = flowNodes.value.filter((node) => node.id !== taskId);
+  const taskIdSet = new Set(nextTasks.map((task) => task.id));
+  flowEdges.value = flowEdges.value.filter(
+    (edge) => taskIdSet.has(edge.source) && taskIdSet.has(edge.target),
+  );
+  flowTasks.value = nextTasks;
+}
+
+function buildFlowTaskDefaults(screenId = ''): FlowTask {
+  const nextLabel = getFlowTaskBaseLabel(flowTasks.value.length + 1);
+  return {
+    id: getFlowTaskId(),
+    title: nextLabel,
+    screenId,
+  };
+}
+
+function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.value) {
+  const validIds = new Set(screenList.map((screen) => screen.id));
+  if (screenList.length === 0) {
+    flowTaskPreviews.value = {};
+    flowNodes.value = [];
+    flowEdges.value = [];
+    flowTasks.value = [];
+    return;
+  }
+
+  if (flowTasks.value.length === 0 && screenList.length > 0) {
+    flowTasks.value = screenList.map((screen) => ({
+      id: getFlowTaskId(),
+      title: `${screen.name}`,
+      screenId: screen.id,
+    }));
+  } else {
+    flowTasks.value = flowTasks.value.filter((task) => !task.screenId || validIds.has(task.screenId));
+    flowTasks.value = flowTasks.value.map((task, index) => ({
+      ...task,
+      title: task.title || getFlowTaskBaseLabel(index + 1),
+    }));
+    const currentIds = new Set(flowTasks.value.map((task) => task.screenId));
+    for (const screen of screenList) {
+      const hasAssignedScreen = currentIds.has(screen.id);
+      if (!hasAssignedScreen) {
+        flowTasks.value = [...flowTasks.value, buildFlowTaskDefaults(screen.id)];
+        currentIds.add(screen.id);
+      }
+    }
+  }
+
+  if (screenList.length > 0 && activeScreenId.value) {
+    const activeTaskIndex = flowTasks.value.findIndex((task) => task.screenId === activeScreenId.value);
+    if (activeTaskIndex < 0 && flowTasks.value.length > 0) {
+      const nextTasks = [...flowTasks.value];
+      nextTasks[0] = {
+        ...nextTasks[0],
+        screenId: activeScreenId.value,
+      };
+      flowTasks.value = nextTasks;
+    }
+  }
+
+  const validTaskIds = new Set(flowTasks.value.map((task) => task.id));
+  flowEdges.value = flowEdges.value.filter(
+    (edge) => validTaskIds.has(edge.source) && validTaskIds.has(edge.target),
+  );
+  flowTaskPreviews.value = Object.fromEntries(
+    Object.entries(flowTaskPreviews.value).filter(([taskId]) => validTaskIds.has(taskId)),
+  );
+
+  const oldPositions = new Map<string, { x: number; y: number }>();
+  for (const node of flowNodes.value) {
+    oldPositions.set(node.id, { ...node.position });
+  }
+  flowNodes.value = flowTasks.value.map((task, index) => {
+    const position = oldPositions.get(task.id) ?? buildFlowNodePosition(index);
+    return {
+      id: task.id,
+      type: 'flow-task',
+      position,
+      data: {
+        taskId: task.id,
+        title: task.title,
+        screenId: task.screenId,
+      },
+    };
+  });
+
+  for (const task of flowTasks.value) {
+    void ensureFlowTaskPreview(task.id, task.screenId);
+  }
+}
+
+async function ensureFlowTaskPreview(taskId: string, screenId: string) {
+  const previous = flowTaskPreviews.value[taskId];
+  if (previous?.screenId === screenId && previous.component) {
+    return;
+  }
+  if (previous?.cleanup) {
+    previous.cleanup();
+  }
+
+  flowTaskPreviews.value = {
+    ...flowTaskPreviews.value,
+    [taskId]: {
+      component: null,
+      isLoading: true,
+      error: '',
+      screenId,
+      cleanup: previous?.cleanup ?? null,
+    },
+  };
+
+  if (!screenId) {
+    flowTaskPreviews.value = {
+      ...flowTaskPreviews.value,
+      [taskId]: {
+        component: null,
+        isLoading: false,
+        error: 'Asigna una pantalla para ver el preview.',
+        screenId: '',
+      },
+    };
+    return;
+  }
+
+  try {
+    const state = await sessionService.loadLatestState(screenId);
+    if (!state) {
+      flowTaskPreviews.value = {
+        ...flowTaskPreviews.value,
+        [taskId]: {
+          component: null,
+          isLoading: false,
+          error: 'Esta pantalla aún no tiene versión guardada.',
+          screenId,
+        },
+      };
+      return;
+    }
+    const pipelineOutput = await pipelineService.renderFromStoredState({
+      pug: state.screenPayload.sourcePug,
+      css: state.screenPayload.css,
+      data: state.screenPayload.data,
+      messages: state.screenPayload.messages,
+    });
+    const rendered = await buildGeneratedScreen(pipelineOutput, {
+      componentLoaders,
+      styleId: `flow-screen-${taskId}`,
+    });
+    const rawCleanup = rendered.installStyles();
+    flowTaskPreviews.value = {
+      ...flowTaskPreviews.value,
+      [taskId]: {
+        component: markRaw(rendered.component),
+        isLoading: false,
+        error: '',
+        screenId,
+        cleanup: rawCleanup,
+      },
+    };
+  } catch (_error) {
+    flowTaskPreviews.value = {
+      ...flowTaskPreviews.value,
+      [taskId]: {
+        component: null,
+        isLoading: false,
+        error: 'No fue posible renderizar el preview.',
+        screenId,
+      },
+    };
+  }
+}
+
+function addFlowTask() {
+  const defaultScreenId = screens.value[0]?.id ?? '';
+  const task = buildFlowTaskDefaults(defaultScreenId);
+  flowTasks.value = [...flowTasks.value, task];
+  flowNodes.value = [
+    ...flowNodes.value,
+    {
+      id: task.id,
+      type: 'flow-task',
+      position: buildFlowNodePosition(flowTasks.value.length - 1),
+      data: {
+        taskId: task.id,
+        title: task.title,
+        screenId: task.screenId,
+      },
+    },
+  ];
+  if (task.screenId) {
+    void ensureFlowTaskPreview(task.id, task.screenId);
+  }
+}
+
+function removeFlowTask(taskId: string) {
+  removeFlowTaskById(taskId);
+}
+
+function setFlowTaskTitle(taskId: string, title: string) {
+  flowTasks.value = flowTasks.value.map((task) => (task.id === taskId ? { ...task, title } : task));
+  flowNodes.value = flowNodes.value.map((node) =>
+    node.id === taskId
+      ? {
+          ...node,
+          data: {
+            ...node.data,
+            taskId: taskId,
+            title,
+          },
+        }
+      : node,
+  );
+}
+
+function onFlowTaskScreenChange(taskId: string, event: Event) {
+  const selectedScreenId = (event.target as HTMLSelectElement).value;
+  flowTasks.value = flowTasks.value.map((task) =>
+    task.id === taskId ? { ...task, screenId: selectedScreenId } : task,
+  );
+  flowNodes.value = flowNodes.value.map((node) =>
+    node.id === taskId
+      ? {
+          ...node,
+          data: {
+            ...node.data,
+            taskId,
+            title: node.data.title,
+            screenId: selectedScreenId,
+          },
+        }
+      : node,
+  );
+  void ensureFlowTaskPreview(taskId, selectedScreenId);
+}
+
+function onFlowConnect(connection: { source?: string; target?: string }) {
+  if (!connection.source || !connection.target) {
+    return;
+  }
+  if (connection.source === connection.target) {
+    return;
+  }
+
+  const exists = flowEdges.value.some(
+    (edge) => edge.source === connection.source && edge.target === connection.target,
+  );
+  if (exists) {
+    return;
+  }
+
+  flowEdges.value = [
+    ...flowEdges.value,
+    {
+      id: `edge-${Date.now()}-${connection.source}-${connection.target}`,
+      source: connection.source,
+      target: connection.target,
+    },
+  ];
+}
+
+function onFlowNodeInput(taskId: string, event: Event) {
+  const nextTitle = (event.target as HTMLInputElement).value;
+  setFlowTaskTitle(taskId, nextTitle);
+}
+
+function onFlowNodeOpen(taskId: string) {
+  focusFlowTask(taskId);
+}
+
+function getFlowNodeView(taskId: string) {
+  return flowNodesWithPreviews.value.find((node) => node.id === taskId);
+}
+
+function focusFlowTask(taskId: string) {
+  const task = flowTasks.value.find((item) => item.id === taskId);
+  if (!task || !task.screenId) {
+    return;
+  }
+  activeScreenId.value = task.screenId;
+  void openScreen(task.screenId, { force: true });
+}
+
+function toggleBuilderMinimized() {
+  isBuilderMinimized.value = !isBuilderMinimized.value;
+  if (isBuilderMinimized.value) {
+    syncFlowTasksToScreens(screens.value);
+  }
 }
 
 function buildPugGenerationContext() {
@@ -829,6 +1213,7 @@ async function hydrateFromSessionState(state: SessionScreenState | null) {
 async function refreshScreensFromSession() {
   const session = await sessionService.getSession();
   screens.value = session.screens || [];
+  syncFlowTasksToScreens(screens.value);
   if (session.theme && session.theme !== activeTheme.value) {
     activeTheme.value = session.theme;
   }
@@ -854,6 +1239,7 @@ async function openScreen(screenId: string, options: OpenScreenOptions = {}) {
     screens.value = session.screens || screens.value;
     isScreenDirty.value = state === null && screens.value.find((screen) => screen.id === trimmed)?.lastRevision === 0;
     activeScreenId.value = trimmed;
+    syncFlowTasksToScreens(screens.value);
   } finally {
     isSessionLoading.value = false;
   }
@@ -888,6 +1274,7 @@ async function createNewScreen() {
   activeScreenId.value = created.id;
   await openScreen(created.id, { force: true });
   isScreenDirty.value = false;
+  syncFlowTasksToScreens(screens.value);
 }
 
 async function saveCurrentScreen() {
@@ -924,6 +1311,11 @@ async function saveCurrentScreen() {
       activeScreen.lastRevision += 1;
     }
     message.value = 'Estado de pantalla guardado.';
+    for (const task of flowTasks.value) {
+      if (task.screenId === currentScreenId) {
+        void ensureFlowTaskPreview(task.id, task.screenId);
+      }
+    }
   } finally {
     isSaving.value = false;
   }
@@ -1608,6 +2000,7 @@ onBeforeUnmount(() => {
     cleanupStyle.value();
     cleanupStyle.value = null;
   }
+  clearFlowTaskPreviews();
 });
 
 function onPromptKeydown(event: KeyboardEvent) {
@@ -1704,6 +2097,9 @@ function onPromptKeydown(event: KeyboardEvent) {
             >
               Editar CSS
             </button>
+          <button type="button" class="screen-action-btn" @click="toggleBuilderMinimized">
+            {{ isBuilderMinimized ? 'Maximizar' : 'Minimizar' }}
+          </button>
           </div>
           <div>
             <h1>Builder Editor</h1>
@@ -1729,7 +2125,7 @@ function onPromptKeydown(event: KeyboardEvent) {
         </div>
       </header>
 
-      <article class="canvas-surface">
+      <article v-if="!isBuilderMinimized" class="canvas-surface">
         <Transition :name="themeTransitionDirection === 'left' ? 'canvas-swipe-left' : 'canvas-swipe-right'" mode="out-in">
           <div v-if="generatedComponent" :key="themeTransitionKey" class="canvas-content">
             <component :is="generatedComponent" />
@@ -1742,6 +2138,82 @@ function onPromptKeydown(event: KeyboardEvent) {
             {{ generatedComponent ? 'Actualizando pantalla...' : 'Generando pantalla...' }}
           </div>
         </div>
+      </article>
+      <article v-else class="canvas-surface flow-surface">
+        <div class="flow-toolbar">
+          <h2>Flujo de tareas</h2>
+          <div class="flow-toolbar-actions">
+            <button type="button" class="screen-action-btn flow-toolbar-btn" :disabled="screens.length === 0" @click="addFlowTask">
+              + Nueva tarea
+            </button>
+          </div>
+        </div>
+        <div v-if="flowNodes.length === 0" class="canvas-state">
+          No hay pantallas aún. Crea o asigna una pantalla para iniciar.
+        </div>
+        <div v-else class="flow-canvas">
+          <VueFlow
+            v-model:nodes="flowNodes"
+            v-model:edges="flowEdges"
+            :default-zoom="1"
+            :fit-view-on-init="true"
+            :pan-on-drag="false"
+            :zoom-on-scroll="false"
+            :nodes-draggable="true"
+            :snap-to-grid="true"
+            :snap-grid="[20, 20]"
+            class="flow-canvas-instance"
+            @connect="onFlowConnect"
+          >
+            <template #node-flow-task="{ id }">
+              <div class="flow-task">
+                <Handle type="target" :position="Position.Left" id="in" class="flow-handle" />
+                <Handle type="source" :position="Position.Right" id="out" class="flow-handle" />
+                <header class="flow-task-header">
+                  <input
+                    class="flow-task-title"
+                    type="text"
+                    :value="getFlowNodeView(id)?.task?.title ?? ''"
+                    @input="onFlowNodeInput(id, $event)"
+                    placeholder="Nombre de tarea"
+                  />
+                  <button type="button" class="screen-action-btn flow-task-remove" @click="removeFlowTask(id)">×</button>
+                </header>
+                <label class="flow-task-screen-label">Pantalla asociada</label>
+                <select
+                  class="flow-task-screen-select"
+                  :value="getFlowNodeView(id)?.task?.screenId ?? ''"
+                  @change="onFlowTaskScreenChange(id, $event)"
+                >
+                  <option value="">Sin pantalla</option>
+                  <option v-for="screen in screens" :key="screen.id" :value="screen.id">{{ screen.name }}</option>
+                </select>
+                <div class="flow-task-preview">
+                  <div v-if="getFlowNodeView(id)?.preview?.isLoading" class="flow-preview-placeholder">
+                    Cargando vista previa...
+                  </div>
+                  <p v-else-if="getFlowNodeView(id)?.preview?.error" class="flow-preview-error">
+                    {{ getFlowNodeView(id)?.preview?.error }}
+                  </p>
+                  <component
+                    v-else-if="getFlowNodeView(id)?.preview?.component"
+                    :is="getFlowNodeView(id)?.preview?.component"
+                    class="flow-preview-component"
+                  />
+                  <p v-else class="flow-preview-placeholder">Sin vista previa. Guarda la pantalla o asigna una pantalla.</p>
+                </div>
+                <footer class="flow-task-footer">
+                  <button type="button" class="screen-action-btn flow-task-open-btn" @click="onFlowNodeOpen(id)">
+                    Abrir pantalla
+                  </button>
+                </footer>
+              </div>
+            </template>
+          </VueFlow>
+        </div>
+        <p v-if="flowEdges.length > 0" class="flow-status">
+          Conexiones activas: {{ flowEdges.length }}
+        </p>
       </article>
 
       <footer class="canvas-meta">
@@ -2254,6 +2726,175 @@ function onPromptKeydown(event: KeyboardEvent) {
   overflow: auto;
   color: var(--bs-body-color);
   position: relative;
+}
+
+.flow-surface {
+  overflow: hidden;
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+}
+
+.flow-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.flow-toolbar h2 {
+  margin: 0;
+  font-size: 1.02rem;
+  color: #e5ebff;
+}
+
+.flow-toolbar-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.flow-toolbar-btn-soft {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.flow-canvas {
+  position: relative;
+  min-height: 360px;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(8, 11, 28, 0.82);
+}
+
+.flow-canvas-instance {
+  width: 100%;
+  min-height: 360px;
+  height: 65vh;
+}
+
+.flow-canvas-instance :deep(.vue-flow) {
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+  background: transparent;
+}
+
+.flow-canvas-instance :deep(.vue-flow__node) {
+  background: transparent !important;
+}
+
+.flow-canvas-instance :deep(.vue-flow__edge path) {
+  stroke: #9bc0ff;
+  stroke-width: 2;
+}
+
+.flow-handle {
+  width: 10px;
+  height: 10px;
+  background: #8ec5ff;
+  border: 1px solid #1f3566;
+  border-radius: 999px;
+}
+
+.flow-task {
+  position: relative;
+  width: 100%;
+  min-width: 280px;
+  min-height: 260px;
+  background: rgba(17, 23, 52, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.6rem;
+  color: #f4f7ff;
+  box-shadow: 0 10px 25px rgba(2, 10, 26, 0.34);
+}
+
+.flow-task-header {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.flow-task-title {
+  flex: 1;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: #0d132f;
+  color: #f4f7ff;
+  padding: 0.35rem 0.55rem;
+}
+
+.flow-task-remove {
+  width: 2rem;
+  min-width: 2rem;
+  padding: 0;
+}
+
+.flow-task-screen-label {
+  font-size: 0.8rem;
+  color: #c7d5ef;
+}
+
+.flow-task-screen-select {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background: #0d132f;
+  color: #f4f7ff;
+  padding: 0.35rem 0.55rem;
+}
+
+.flow-task-preview {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  background: #0a1024;
+  width: 300px;
+  height: 200px;
+  overflow: hidden;
+  position: relative;
+  padding: 0.2rem;
+}
+
+.flow-preview-component {
+  transform: scale(0.28);
+  transform-origin: top left;
+  width: 1024px;
+  height: 676px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.flow-preview-placeholder {
+  margin: 0;
+  color: #9ca9ca;
+  font-size: 0.78rem;
+  padding: 0.45rem;
+}
+
+.flow-preview-error {
+  margin: 0;
+  color: #ff8f8f;
+  font-size: 0.76rem;
+  padding: 0.45rem;
+}
+
+.flow-task-footer {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.flow-task-open-btn {
+  margin-left: auto;
+}
+
+.flow-status {
+  margin: 0;
+  color: #a9b6d4;
+  font-size: 0.82rem;
 }
 
 .canvas-state {

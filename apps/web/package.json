@@ -13,6 +13,7 @@
     "type-check": "vue-tsc --build"
   },
   "dependencies": {
+    "@vue-flow/core": "^1.48.2",
     "bootstrap": "^5.3.8",
     "bootstrap-icons": "^1.13.1",
     "bootstrap-vue-next": "^0.44.7",
