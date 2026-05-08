@@ -2339,7 +2339,6 @@ function onPromptKeydown(event: KeyboardEvent) {
           title="Generar pantalla (Enter)"
           aria-label="Generar pantalla"
           @click="onGenerate"
-          v-b-tooltip.hover="'Generar pantalla'"
         >
           <span v-if="isGenerating" class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
           <i v-else class="bi bi-play-fill" aria-hidden="true"></i>
