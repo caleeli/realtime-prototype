@@ -12,7 +12,7 @@ import {
   type Ref,
   watch,
 } from 'vue';
-import { ConnectionMode, VueFlow, Handle, Position } from '@vue-flow/core';
+import { ConnectionMode, VueFlow, Handle, Position, type EdgeMouseEvent } from '@vue-flow/core';
 import '@vue-flow/core/dist/style.css';
 
 import {
@@ -214,7 +214,16 @@ const cssGenerationError = ref('');
 const cssGenerationHistory = ref<CssGenerationHistoryEntry[]>([]);
 const cssGenerationRedoStack = ref<string[]>([]);
 const cssGenerationConversation = ref<GenerationMessage[]>([]);
-const isBuilderMinimized = ref(false);
+type PrimaryNav = 'builder' | 'flows' | 'components' | 'library' | 'settings';
+type EditorWorkspaceTab = 'canvas' | 'data' | 'states';
+type FlowWorkspaceTab = 'canvas' | 'data' | 'states';
+
+const primaryNav = ref<PrimaryNav>('builder');
+const railCollapsed = ref(false);
+const editorWorkspaceTab = ref<EditorWorkspaceTab>('canvas');
+const flowWorkspaceTab = ref<FlowWorkspaceTab>('canvas');
+const vueFlowRef = ref<InstanceType<typeof VueFlow> | null>(null);
+const flowZoomPercent = ref(100);
 const flowTaskCounter = ref(1);
 const flowTasks = ref<FlowTask[]>([]);
 const flowEdges = ref<FlowEdge[]>([]);
@@ -276,6 +285,21 @@ const activeThemeLabel = computed(() => {
 });
 
 const themeTransitionKey = computed(() => `${screenRevision.value}-${activeTheme.value}`);
+
+const activeScreenLabel = computed(() => {
+  const match = screens.value.find((screen) => screen.id === activeScreenId.value);
+  return match?.name ?? 'Sin pantalla';
+});
+
+const browserLocale = computed(() => (typeof navigator !== 'undefined' ? navigator.language : '—'));
+
+const builderDataPreviewJson = computed(() => {
+  if (!lastGeneratedOutput.value) {
+    return '// Genera una pantalla para ver el JSON de datos.';
+  }
+  return formatScreenDataForEditor(lastGeneratedOutput.value.data);
+});
+
 const FLOW_COLUMNS = 3;
 const FLOW_COLUMN_GAP = 340;
 const FLOW_ROW_GAP = 300;
@@ -290,6 +314,21 @@ const flowNodesWithPreviews = computed(() => {
     task: taskLookup.get(node.id),
     preview: flowTaskPreviews.value[node.id] ?? null,
   }));
+});
+
+const flowSnapshotText = computed(() => {
+  try {
+    return JSON.stringify(
+      {
+        tasks: flowTasks.value,
+        edges: flowEdges.value,
+      },
+      null,
+      2,
+    );
+  } catch (_error) {
+    return '{}';
+  }
 });
 
 function getThemeByOffset(offset: number) {
@@ -924,24 +963,8 @@ function removeSelectedFlowEdge() {
   removeFlowEdgeById(selectedFlowEdgeId.value);
 }
 
-function onFlowEdgeClick(firstArg: unknown, secondArg: unknown) {
-  const candidates: unknown[] = [firstArg, secondArg];
-  const getId = (candidate: unknown): string => {
-    if (!candidate || typeof candidate !== 'object') {
-      return '';
-    }
-    const record = candidate as { id?: unknown; edge?: unknown };
-    if (typeof record.id === 'string') {
-      return record.id;
-    }
-    const edge = record.edge as { id?: unknown };
-    if (edge && typeof edge.id === 'string') {
-      return edge.id;
-    }
-    return '';
-  };
-
-  const edgeId = candidates.reduce((found, candidate) => found || getId(candidate), '');
+function onFlowEdgeClick(mouseEvent: EdgeMouseEvent) {
+  const edgeId = mouseEvent.edge?.id ?? '';
   if (edgeId) {
     selectedFlowEdgeId.value = edgeId;
     syncFlowEdgeSelectionStyle();
@@ -966,29 +989,74 @@ function getFlowNodeView(taskId: string) {
   return flowNodesWithPreviews.value.find((node) => node.id === taskId);
 }
 
+function navigateToBuilder() {
+  primaryNav.value = 'builder';
+}
+
+function navigateToPlaceholderNav(nav: Exclude<PrimaryNav, 'builder' | 'flows'>) {
+  primaryNav.value = nav;
+}
+
+function navigateToFlows() {
+  primaryNav.value = 'flows';
+  syncFlowTasksToScreens(screens.value);
+}
+
+function onTopbarPlay() {
+  navigateToBuilder();
+  focusPromptTextarea();
+}
+
+function onExportClick() {
+  message.value = 'La exportación del proyecto estará disponible próximamente.';
+}
+
+async function onShareClick() {
+  const url = typeof window !== 'undefined' ? window.location.href : '';
+  try {
+    if (url && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url);
+      message.value = 'Enlace del prototipo copiado al portapapeles.';
+    } else {
+      message.value = url || 'No hay URL para compartir.';
+    }
+  } catch (_error) {
+    message.value = 'No se pudo copiar el enlace.';
+  }
+}
+
+function onFlowViewportChangeEnd() {
+  const viewport = vueFlowRef.value?.getViewport?.();
+  const z = viewport?.zoom;
+  if (typeof z === 'number' && Number.isFinite(z)) {
+    flowZoomPercent.value = Math.round(z * 100);
+  }
+}
+
+function flowZoomIn() {
+  vueFlowRef.value?.zoomIn?.();
+}
+
+function flowZoomOut() {
+  vueFlowRef.value?.zoomOut?.();
+}
+
+function flowFitView() {
+  void vueFlowRef.value?.fitView?.();
+}
+
 async function focusFlowTask(taskId: string) {
   const task = flowTasks.value.find((item) => item.id === taskId);
   if (!task || !task.screenId) {
     return;
   }
 
-  isBuilderMinimized.value = false;
+  navigateToBuilder();
   activeScreenId.value = task.screenId;
   try {
     await openScreen(task.screenId, { force: true });
   } catch (_error) {
     message.value = 'No se pudo abrir la pantalla desde el flujo.';
-  }
-}
-
-function openBuilder() {
-  isBuilderMinimized.value = false;
-}
-
-function toggleBuilderMinimized() {
-  isBuilderMinimized.value = !isBuilderMinimized.value;
-  if (isBuilderMinimized.value) {
-    syncFlowTasksToScreens(screens.value);
   }
 }
 
@@ -1732,6 +1800,22 @@ const actionableUxRecommendations = computed<UXRecommendationBubble[]>(() => {
     });
 });
 
+const statusBarValidation = computed(() => {
+  if (uxEvaluationStatus.value === 'loading') {
+    return 'Evaluando interfaz…';
+  }
+  if (uxEvaluationStatus.value === 'error') {
+    return uxEvaluationMessage.value || 'Error en validación UX';
+  }
+  if (actionableUxRecommendations.value.length > 0) {
+    return `${actionableUxRecommendations.value.length} sugerencia(s) UX pendientes`;
+  }
+  if (uxEvaluationStatus.value === 'ready') {
+    return 'Validaciones UX al día';
+  }
+  return 'Sin evaluación UX reciente';
+});
+
 function getUxRecommendationPriority(recommendation: string): number {
   const parsed = parseUxRecommendation(recommendation);
   if (!parsed) {
@@ -2436,9 +2520,288 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 <template>
   <main class="builder-root" :data-theme="activeTheme">
-    <section v-if="!isBuilderMinimized" class="canvas-wrap">
+    <header class="app-topbar">
+      <div class="app-topbar-brand">
+        <span class="app-topbar-logo" aria-hidden="true">✦</span>
+        <div class="app-topbar-titles">
+          <span class="app-topbar-name">Rapid Prototype Builder</span>
+          <span class="app-topbar-tagline">Vista previa y flujos con IA</span>
+        </div>
+      </div>
+      <div class="app-topbar-actions">
+        <button type="button" class="app-icon-btn" title="Ir al builder" aria-label="Ir al builder y enfocar el prompt" @click="onTopbarPlay">
+          <i class="bi bi-play-fill" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="app-text-btn" @click="onExportClick">
+          <i class="bi bi-download" aria-hidden="true"></i>
+          Exportar
+        </button>
+        <button type="button" class="app-text-btn" @click="onShareClick">
+          <i class="bi bi-share" aria-hidden="true"></i>
+          Compartir
+        </button>
+        <div class="app-avatar" aria-hidden="true">RP</div>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <aside class="app-rail" :class="{ 'app-rail--collapsed': railCollapsed }">
+        <nav class="app-rail-nav" aria-label="Secciones principales">
+          <button
+            type="button"
+            class="app-rail-item"
+            :class="{ 'app-rail-item--active': primaryNav === 'builder' }"
+            @click="navigateToBuilder()"
+          >
+            <i class="bi bi-brush" aria-hidden="true"></i>
+            <span class="app-rail-label">Builder</span>
+          </button>
+          <button
+            type="button"
+            class="app-rail-item"
+            :class="{ 'app-rail-item--active': primaryNav === 'flows' }"
+            @click="navigateToFlows()"
+          >
+            <i class="bi bi-diagram-3" aria-hidden="true"></i>
+            <span class="app-rail-label">Flujos</span>
+          </button>
+          <button
+            type="button"
+            class="app-rail-item"
+            :class="{ 'app-rail-item--active': primaryNav === 'components' }"
+            @click="navigateToPlaceholderNav('components')"
+          >
+            <i class="bi bi-grid-1x2" aria-hidden="true"></i>
+            <span class="app-rail-label">Componentes</span>
+          </button>
+          <button
+            type="button"
+            class="app-rail-item"
+            :class="{ 'app-rail-item--active': primaryNav === 'library' }"
+            @click="navigateToPlaceholderNav('library')"
+          >
+            <i class="bi bi-collection" aria-hidden="true"></i>
+            <span class="app-rail-label">Biblioteca</span>
+          </button>
+          <button
+            type="button"
+            class="app-rail-item"
+            :class="{ 'app-rail-item--active': primaryNav === 'settings' }"
+            @click="navigateToPlaceholderNav('settings')"
+          >
+            <i class="bi bi-gear" aria-hidden="true"></i>
+            <span class="app-rail-label">Ajustes</span>
+          </button>
+        </nav>
+        <button
+          type="button"
+          class="app-rail-collapse"
+          :aria-expanded="!railCollapsed"
+          :title="railCollapsed ? 'Expandir barra lateral' : 'Contraer barra lateral'"
+          @click="railCollapsed = !railCollapsed"
+        >
+          <i class="bi" :class="railCollapsed ? 'bi-chevron-double-right' : 'bi-chevron-double-left'" aria-hidden="true"></i>
+          <span class="visually-hidden">{{ railCollapsed ? 'Expandir navegación' : 'Contraer navegación' }}</span>
+        </button>
+      </aside>
+
+      <aside v-if="primaryNav === 'builder'" class="builder-lateral" aria-label="Panel del builder">
+        <div class="builder-lateral-header">
+          <h2 class="builder-lateral-title">Builder</h2>
+          <p class="builder-lateral-sub">Describe la pantalla que quieres generar.</p>
+        </div>
+
+        <div class="floating-prompt-title">
+          <h3 class="builder-lateral-section-title">Prompt</h3>
+          <button
+            type="button"
+            class="conversation-toggle-btn"
+            :aria-expanded="isConversationVisible"
+            aria-controls="conversation-list"
+            :title="isConversationVisible ? 'Ocultar historial' : 'Mostrar historial'"
+            :aria-label="isConversationVisible ? 'Ocultar historial de conversación' : 'Mostrar historial de conversación'"
+            @click="toggleConversationVisibility"
+          >
+            <i class="bi conversation-toggle-icon" :class="isConversationVisible ? 'bi-eye-slash' : 'bi-eye'" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div v-if="isConversationVisible" id="conversation-list" class="conversation-list">
+          <div v-if="conversation.length === 0" class="conversation-empty">
+            Aún no hay mensajes. Escribe uno y pulsa ▶ para comenzar.
+          </div>
+          <div
+            v-for="(entry, index) in conversation"
+            :key="`${entry.role}-${index}`"
+            class="conversation-row"
+            :class="entry.role"
+          >
+            <div class="conversation-content">
+              <span v-if="entry.role === 'user'">{{ entry.content }}</span>
+              <span v-else class="assistant-icon">📟</span>
+            </div>
+          </div>
+        </div>
+        <div v-if="actionableUxRecommendations.length > 0 || isGenerating" class="ux-recommendation-bubbles">
+          <TransitionGroup
+            name="ux-bubble"
+            tag="div"
+            class="ux-recommendation-bubble-list"
+            appear
+          >
+            <b-button
+              v-for="suggestion in actionableUxRecommendations"
+              :key="suggestion.id"
+              type="button"
+              class="ux-recommendation-bubble"
+              :variant="suggestion.severity === 'high' ? 'danger' : suggestion.severity === 'medium' ? 'warning' : 'dark'"
+              v-b-tooltip="{ title: suggestion.text }"
+              :class="{
+                'ux-recommendation-bubble--high': suggestion.severity === 'high',
+                'ux-recommendation-bubble--medium': suggestion.severity === 'medium',
+                'ux-recommendation-bubble--low': suggestion.severity === 'low',
+                'ux-recommendation-bubble--burst': explodingBubbleId === suggestion.id,
+              }"
+              :aria-label="suggestion.text"
+              @click="onUxSuggestionClick(suggestion)"
+            >
+              <span class="ux-recommendation-bubble-letter">
+                {{ suggestion.severity === 'high' ? 'H' : suggestion.severity === 'medium' ? 'M' : 'L' }}
+              </span>
+              <span class="ux-recommendation-text-visually-hidden">{{ suggestion.text }}</span>
+            </b-button>
+          </TransitionGroup>
+        </div>
+        <textarea
+          ref="promptInput"
+          v-model="promptText"
+          rows="5"
+          class="builder-prompt-textarea"
+          :placeholder="promptPlaceholder"
+          :disabled="isGenerating"
+          @keydown="onPromptKeydown"
+        ></textarea>
+        <div class="prompt-actions">
+          <button
+            type="button"
+            class="prompt-action-generate prompt-action-btn"
+            :disabled="isGenerating"
+            title="Generar pantalla (Enter)"
+            aria-label="Generar pantalla"
+            @click="onGenerate"
+          >
+            <span v-if="isGenerating" class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            <i v-else class="bi bi-play-fill" aria-hidden="true"></i>
+            <span class="visually-hidden">Generar pantalla</span>
+          </button>
+          <button
+            type="button"
+            class="conversation-refresh prompt-action-btn"
+            :disabled="isGenerating || lastUserMessageIndex < 0"
+            title="Regenerar desde el último mensaje (Ctrl + Enter)"
+            aria-label="Regenerar desde el último mensaje"
+            @click="onRefresh(lastUserMessageIndex)"
+          >
+            <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+            <span class="visually-hidden">Regenerar desde el último mensaje</span>
+          </button>
+          <button
+            type="button"
+            class="conversation-rollback prompt-action-btn"
+            :disabled="isGenerating || lastUserMessageIndex < 0"
+            title="Quitar último mensaje del usuario (Ctrl + Shift + Enter)"
+            aria-label="Quitar último mensaje del usuario y respuestas siguientes"
+            @click="onRollback"
+          >
+            <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i>
+            <span class="visually-hidden">Quitar último mensaje del usuario y respuestas siguientes</span>
+          </button>
+        </div>
+
+        <div class="builder-context">
+          <div class="builder-context-header">
+            <span class="builder-context-heading">Contexto</span>
+          </div>
+          <dl class="builder-context-list">
+            <div class="builder-context-row">
+              <dt>Locale</dt>
+              <dd>{{ browserLocale }}</dd>
+            </div>
+            <div class="builder-context-row">
+              <dt>Packs</dt>
+              <dd class="builder-context-packs">
+                <span class="builder-pack-chip">advanced-inputs</span>
+                <span class="builder-pack-chip">files</span>
+                <span class="builder-pack-chip">charts</span>
+              </dd>
+            </div>
+            <div class="builder-context-row builder-context-row--theme">
+              <dt>Tema</dt>
+              <dd>
+                <label class="theme-control theme-control--compact" @touchstart="onThemeSwipeStart" @touchend="onThemeSwipeEnd">
+                  <div class="theme-switch" aria-label="Cambio rápido de tema">
+                    <button type="button" class="theme-switch-btn" @click="switchTheme('left')" title="Tema anterior (←)">
+                      ◀
+                    </button>
+                    <span class="theme-current">{{ activeThemeLabel }}</span>
+                    <button type="button" class="theme-switch-btn" @click="switchTheme('right')" title="Tema siguiente (→)">
+                      ▶
+                    </button>
+                  </div>
+                  <small class="theme-hint">← / →</small>
+                </label>
+              </dd>
+            </div>
+          </dl>
+        </div>
+
+        <div
+          v-if="uxEvaluationStatus === 'ready' && actionableUxRecommendations.length === 0 && !isGenerating"
+          class="builder-feedback-ok"
+        >
+          <i class="bi bi-check-circle-fill" aria-hidden="true"></i>
+          <span>Flujo de pantalla sin sugerencias UX pendientes.</span>
+        </div>
+        <p class="prompt-msg builder-prompt-msg">{{ message }}</p>
+      </aside>
+
+      <div class="app-main">
+        <section v-if="primaryNav === 'builder'" class="canvas-wrap">
       <header class="canvas-header">
-        <div class="canvas-header-top">
+        <div class="canvas-workspace-head">
+          <div class="workspace-tabs" role="tablist" aria-label="Vista del lienzo">
+            <button
+              type="button"
+              role="tab"
+              class="workspace-tab"
+              :class="{ 'workspace-tab--active': editorWorkspaceTab === 'canvas' }"
+              :aria-selected="editorWorkspaceTab === 'canvas'"
+              @click="editorWorkspaceTab = 'canvas'"
+            >
+              Lienzo
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class="workspace-tab"
+              :class="{ 'workspace-tab--active': editorWorkspaceTab === 'data' }"
+              :aria-selected="editorWorkspaceTab === 'data'"
+              @click="editorWorkspaceTab = 'data'"
+            >
+              Datos
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class="workspace-tab"
+              :class="{ 'workspace-tab--active': editorWorkspaceTab === 'states' }"
+              :aria-selected="editorWorkspaceTab === 'states'"
+              @click="editorWorkspaceTab = 'states'"
+            >
+              Estados
+            </button>
+          </div>
+        </div>
+        <div class="canvas-header-top canvas-header-top--tools">
           <div class="screen-toolbar">
             <label>
               Pantallas
@@ -2496,35 +2859,11 @@ function onPromptKeydown(event: KeyboardEvent) {
             >
               Editar CSS
             </button>
-          <button type="button" class="screen-action-btn" @click="toggleBuilderMinimized">
-            {{ isBuilderMinimized ? 'Maximizar' : 'Minimizar' }}
-          </button>
           </div>
-          <div>
-            <h1>Builder Editor</h1>
-            <p>Genera pantallas con IA y las dibuja en vivo en el canvas.</p>
-          </div>
-          <label
-            class="theme-control"
-            @touchstart="onThemeSwipeStart"
-            @touchend="onThemeSwipeEnd"
-          >
-            Tema
-            <div class="theme-switch" aria-label="Cambio rápido de tema">
-              <button type="button" class="theme-switch-btn" @click="switchTheme('left')" title="Tema anterior (←)">
-                ◀
-              </button>
-              <span class="theme-current">{{ activeThemeLabel }}</span>
-              <button type="button" class="theme-switch-btn" @click="switchTheme('right')" title="Tema siguiente (→)">
-                ▶
-              </button>
-            </div>
-            <small class="theme-hint">Hotkeys: ← / →</small>
-          </label>
         </div>
       </header>
 
-      <article class="canvas-surface">
+      <article v-show="editorWorkspaceTab === 'canvas'" class="canvas-surface">
         <Transition :name="themeTransitionDirection === 'left' ? 'canvas-swipe-left' : 'canvas-swipe-right'" mode="out-in">
           <div v-if="generatedComponent" :key="themeTransitionKey" class="canvas-content">
             <component :is="generatedComponent" />
@@ -2538,9 +2877,24 @@ function onPromptKeydown(event: KeyboardEvent) {
           </div>
         </div>
       </article>
+
+      <article v-show="editorWorkspaceTab === 'data'" class="canvas-surface editor-tab-panel">
+        <div class="editor-data-toolbar">
+          <button type="button" class="screen-action-btn" :disabled="!generatedComponent" @click="openDataEditor">
+            Abrir editor JSON
+          </button>
+        </div>
+        <pre class="editor-data-preview">{{ builderDataPreviewJson }}</pre>
+      </article>
+
+      <article v-show="editorWorkspaceTab === 'states'" class="canvas-surface editor-tab-panel">
+        <p class="editor-states-hint">
+          Los estados de navegación entre pantallas se gestionan en la vista <strong>Flujos</strong> del menú lateral.
+        </p>
+      </article>
     </section>
 
-    <section v-else class="canvas-wrap">
+    <section v-else-if="primaryNav === 'flows'" class="canvas-wrap canvas-wrap--flow">
       <svg aria-hidden="true" class="flow-edge-marker-defs">
         <defs>
           <marker
@@ -2558,35 +2912,87 @@ function onPromptKeydown(event: KeyboardEvent) {
         </defs>
       </svg>
       <article class="canvas-surface flow-surface">
-        <div class="flow-toolbar">
-          <h2 class="text-body-emphasis flow-toolbar-title">Flujo de tareas</h2>
-          <div class="flow-toolbar-actions">
-            <button type="button" class="screen-action-btn flow-toolbar-btn" @click="openBuilder">
-              Maximizar builder
+        <div class="flow-workspace-head">
+          <div class="workspace-tabs workspace-tabs--flow" role="tablist" aria-label="Vista del flujo">
+            <button
+              type="button"
+              role="tab"
+              class="workspace-tab"
+              :class="{ 'workspace-tab--active': flowWorkspaceTab === 'canvas' }"
+              :aria-selected="flowWorkspaceTab === 'canvas'"
+              @click="flowWorkspaceTab = 'canvas'"
+            >
+              Lienzo
             </button>
             <button
               type="button"
-              class="screen-action-btn flow-toolbar-btn"
-              :disabled="screens.length === 0"
-              @click="addFlowTask"
+              role="tab"
+              class="workspace-tab"
+              :class="{ 'workspace-tab--active': flowWorkspaceTab === 'data' }"
+              :aria-selected="flowWorkspaceTab === 'data'"
+              @click="flowWorkspaceTab = 'data'"
             >
-              + Nueva tarea
+              Datos
             </button>
             <button
               type="button"
-              class="screen-action-btn flow-toolbar-btn flow-toolbar-btn-soft"
-              :disabled="!selectedFlowEdgeId"
-              @click="removeSelectedFlowEdge"
+              role="tab"
+              class="workspace-tab"
+              :class="{ 'workspace-tab--active': flowWorkspaceTab === 'states' }"
+              :aria-selected="flowWorkspaceTab === 'states'"
+              @click="flowWorkspaceTab = 'states'"
             >
-              Eliminar flecha seleccionada
+              Estados
             </button>
           </div>
+          <div class="flow-toolbar flow-toolbar--split">
+            <h2 class="text-body-emphasis flow-toolbar-title">Flujo de tareas</h2>
+            <div class="flow-toolbar-actions">
+              <div class="flow-zoom-controls" aria-label="Zoom del lienzo">
+                <span class="flow-zoom-readout">{{ flowZoomPercent }}%</span>
+                <button type="button" class="screen-action-btn flow-zoom-btn" title="Alejar" aria-label="Alejar" @click="flowZoomOut">
+                  −
+                </button>
+                <button type="button" class="screen-action-btn flow-zoom-btn" title="Acercar" aria-label="Acercar" @click="flowZoomIn">
+                  +
+                </button>
+                <button
+                  type="button"
+                  class="screen-action-btn flow-zoom-btn"
+                  title="Ajustar a la vista"
+                  aria-label="Ajustar a la vista"
+                  @click="flowFitView"
+                >
+                  <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i>
+                </button>
+              </div>
+              <button type="button" class="screen-action-btn flow-toolbar-btn" @click="navigateToBuilder()">Abrir builder</button>
+              <button
+                type="button"
+                class="screen-action-btn flow-toolbar-btn"
+                :disabled="screens.length === 0"
+                @click="addFlowTask"
+              >
+                + Nueva tarea
+              </button>
+              <button
+                type="button"
+                class="screen-action-btn flow-toolbar-btn flow-toolbar-btn-soft"
+                :disabled="!selectedFlowEdgeId"
+                @click="removeSelectedFlowEdge"
+              >
+                Eliminar flecha seleccionada
+              </button>
+            </div>
+          </div>
         </div>
+        <template v-if="flowWorkspaceTab === 'canvas'">
         <div v-if="flowNodes.length === 0" class="canvas-state">
           No hay pantallas aún. Crea o asigna una pantalla para iniciar.
         </div>
         <div v-else class="flow-canvas">
           <VueFlow
+            ref="vueFlowRef"
             v-model:nodes="flowNodes"
             v-model:edges="flowEdges"
             :default-zoom="1"
@@ -2601,6 +3007,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             @connect="onFlowConnect"
             @edge-click="onFlowEdgeClick"
             @pane-click="onFlowPaneClick"
+            @viewport-change-end="onFlowViewportChangeEnd"
           >
             <template #node-flow-task="{ id }">
               <div class="flow-task">
@@ -2699,117 +3106,66 @@ function onPromptKeydown(event: KeyboardEvent) {
         <p v-if="flowEdges.length > 0" class="flow-status">
           Conexiones activas: {{ flowEdges.length }}
         </p>
+        </template>
+        <div v-show="flowWorkspaceTab === 'data'" class="flow-tab-panel flow-aux-panel">
+          <pre class="editor-data-preview">{{ flowSnapshotText }}</pre>
+        </div>
+        <div v-show="flowWorkspaceTab === 'states'" class="flow-tab-panel flow-aux-panel flow-tab-panel--muted">
+          <p class="editor-states-hint">
+            Conecta nodos en el lienzo para marcar transiciones. Próximamente: estados explícitos y condiciones en cada arista.
+          </p>
+        </div>
       </article>
     </section>
 
-    <section v-if="!isBuilderMinimized" class="floating-prompt">
-      <div class="floating-prompt-title">
-        <h2>Prompt</h2>
-        <button
-          type="button"
-          class="conversation-toggle-btn"
-          :aria-expanded="isConversationVisible"
-          aria-controls="conversation-list"
-          :title="isConversationVisible ? 'Ocultar historial' : 'Mostrar historial'"
-          :aria-label="isConversationVisible ? 'Ocultar historial de conversación' : 'Mostrar historial de conversación'"
-          @click="toggleConversationVisibility"
-        >
-          <i class="bi conversation-toggle-icon" :class="isConversationVisible ? 'bi-eye-slash' : 'bi-eye'" aria-hidden="true"></i>
-        </button>
+    <section v-else class="canvas-wrap nav-placeholder">
+      <div class="nav-placeholder-inner">
+        <template v-if="primaryNav === 'components'">
+          <h2 class="nav-placeholder-title">Componentes</h2>
+          <p class="nav-placeholder-text">Exploración del catálogo BootstrapVue y packs extra. Sección en preparación.</p>
+        </template>
+        <template v-else-if="primaryNav === 'library'">
+          <h2 class="nav-placeholder-title">Biblioteca</h2>
+          <p class="nav-placeholder-text">Inspiración y plantillas reutilizables. Sección en preparación.</p>
+        </template>
+        <template v-else>
+          <h2 class="nav-placeholder-title">Ajustes</h2>
+          <p class="nav-placeholder-text">Preferencias de proyecto y cuenta. Sección en preparación.</p>
+        </template>
+        <button type="button" class="screen-action-btn nav-placeholder-back" @click="navigateToBuilder()">Volver al builder</button>
       </div>
-      <div v-if="isConversationVisible" id="conversation-list" class="conversation-list">
-        <div v-if="conversation.length === 0" class="conversation-empty">
-          Aún no hay mensajes. Escribe uno y pulsa ▶ para comenzar.
-        </div>
-        <div
-          v-for="(entry, index) in conversation"
-          :key="`${entry.role}-${index}`"
-          class="conversation-row"
-          :class="entry.role"
-        >
-          <div class="conversation-content">
-            <span v-if="entry.role === 'user'">{{ entry.content }}</span>
-            <span v-else class="assistant-icon">📟</span>
-          </div>
-        </div>
-      </div>
-      <div v-if="actionableUxRecommendations.length > 0 || isGenerating" class="ux-recommendation-bubbles">
-        <TransitionGroup
-          name="ux-bubble"
-          tag="div"
-          class="ux-recommendation-bubble-list"
-          appear
-        >
-          <b-button
-            v-for="suggestion in actionableUxRecommendations"
-            :key="suggestion.id"
-            type="button"
-            class="ux-recommendation-bubble"
-            :variant="suggestion.severity === 'high' ? 'danger' : suggestion.severity === 'medium' ? 'warning' : 'dark'"
-            v-b-tooltip="{ title: suggestion.text }"
-            :class="{
-              'ux-recommendation-bubble--high': suggestion.severity === 'high',
-              'ux-recommendation-bubble--medium': suggestion.severity === 'medium',
-              'ux-recommendation-bubble--low': suggestion.severity === 'low',
-              'ux-recommendation-bubble--burst': explodingBubbleId === suggestion.id,
-            }"
-            :aria-label="suggestion.text"
-            @click="onUxSuggestionClick(suggestion)"
-          >
-            <span class="ux-recommendation-bubble-letter">
-              {{ suggestion.severity === 'high' ? 'H' : suggestion.severity === 'medium' ? 'M' : 'L' }}
-            </span>
-            <span class="ux-recommendation-text-visually-hidden">{{ suggestion.text }}</span>
-          </b-button>
-        </TransitionGroup>
-      </div>
-      <textarea
-        ref="promptInput"
-        v-model="promptText"
-        rows="4"
-        :placeholder="promptPlaceholder"
-        :disabled="isGenerating"
-        @keydown="onPromptKeydown"
-      ></textarea>
-      <div class="prompt-actions">
-        <button
-          type="button"
-          class="prompt-action-generate prompt-action-btn"
-          :disabled="isGenerating"
-          title="Generar pantalla (Enter)"
-          aria-label="Generar pantalla"
-          @click="onGenerate"
-        >
-          <span v-if="isGenerating" class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-          <i v-else class="bi bi-play-fill" aria-hidden="true"></i>
-          <span class="visually-hidden">Generar pantalla</span>
-        </button>
-        <button
-          type="button"
-          class="conversation-refresh prompt-action-btn"
-          :disabled="isGenerating || lastUserMessageIndex < 0"
-          title="Regenerar desde el último mensaje (Ctrl + Enter)"
-          aria-label="Regenerar desde el último mensaje"
-          @click="onRefresh(lastUserMessageIndex)"
-        >
-          <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
-          <span class="visually-hidden">Regenerar desde el último mensaje</span>
-        </button>
-        <button
-          type="button"
-          class="conversation-rollback prompt-action-btn"
-          :disabled="isGenerating || lastUserMessageIndex < 0"
-          title="Quitar último mensaje del usuario (Ctrl + Shift + Enter)"
-          aria-label="Quitar último mensaje del usuario y respuestas siguientes"
-          @click="onRollback"
-        >
-          <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i>
-          <span class="visually-hidden">Quitar último mensaje del usuario y respuestas siguientes</span>
-        </button>
-      </div>
-      <p class="prompt-msg">{{ message }}</p>
     </section>
-      <Teleport to="body">
+      </div>
+    </div>
+
+    <footer class="app-statusbar">
+      <div class="app-statusbar-left">
+        <template v-if="primaryNav === 'builder'">
+          <span class="app-status-dot app-status-dot--ok" aria-hidden="true"></span>
+          <span class="app-status-name">{{ activeScreenLabel }}</span>
+        </template>
+        <template v-else-if="primaryNav === 'flows'">
+          <span class="app-status-dot app-status-dot--ok" aria-hidden="true"></span>
+          <span class="app-status-name">Flujo de tareas</span>
+        </template>
+        <template v-else>
+          <span class="app-status-name">Rapid Prototype Builder</span>
+        </template>
+      </div>
+      <div class="app-statusbar-center">
+        <span>{{ screens.length }} pantalla(s)</span>
+        <span class="app-statusbar-sep">·</span>
+        <span>{{ flowEdges.length }} conexión(es)</span>
+        <span class="app-statusbar-sep">·</span>
+        <span>{{ flowTasks.length }} tarea(s)</span>
+      </div>
+      <div class="app-statusbar-right">
+        <i class="bi bi-check2-circle app-statusbar-ic" aria-hidden="true"></i>
+        <span>{{ statusBarValidation }}</span>
+      </div>
+    </footer>
+
+    <Teleport to="body">
         <div v-if="isDataEditorVisible" class="data-editor-overlay" @click.self="closeDataEditor">
           <div class="data-editor-modal" role="dialog" aria-modal="true" aria-label="Editor de data JSON">
             <header class="data-editor-header">
@@ -3050,6 +3406,7 @@ function onPromptKeydown(event: KeyboardEvent) {
   --rp-success-text: #16a34a;
 
   min-height: 100vh;
+  height: 100vh;
   margin: 0;
   background: var(--rp-bg-app);
   color: var(--rp-text);
@@ -3063,10 +3420,10 @@ function onPromptKeydown(event: KeyboardEvent) {
     'Helvetica Neue',
     Arial,
     sans-serif;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   position: relative;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 .builder-root *,
@@ -3075,12 +3432,614 @@ function onPromptKeydown(event: KeyboardEvent) {
   box-sizing: border-box;
 }
 
+.app-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.55rem 1.1rem;
+  background: var(--rp-bg-panel);
+  border-bottom: 1px solid var(--rp-border);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
+}
+
+.app-topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.app-topbar-logo {
+  display: inline-grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 10px;
+  background: var(--rp-primary-soft);
+  color: var(--rp-primary);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.app-topbar-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.app-topbar-name {
+  font-weight: 700;
+  font-size: 1.02rem;
+  letter-spacing: -0.02em;
+  color: var(--rp-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-topbar-tagline {
+  font-size: 0.72rem;
+  color: var(--rp-text-muted);
+}
+
+.app-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.app-icon-btn {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 10px;
+  border: 1px solid var(--rp-border);
+  background: var(--rp-bg-panel);
+  color: var(--rp-primary);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.app-icon-btn:hover {
+  background: var(--rp-bg-subtle);
+}
+
+.app-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.38rem 0.65rem;
+  border-radius: 10px;
+  border: 1px solid var(--rp-border);
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.app-text-btn:hover {
+  background: var(--rp-bg-subtle);
+}
+
+.app-avatar {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--rp-primary), #6366f1);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: inline-grid;
+  place-items: center;
+  margin-left: 0.25rem;
+}
+
+.app-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+}
+
+.app-rail {
+  flex: 0 0 auto;
+  width: 200px;
+  display: flex;
+  flex-direction: column;
+  background: var(--rp-bg-panel);
+  border-right: 1px solid var(--rp-border);
+  transition: width 0.18s ease;
+}
+
+.app-rail--collapsed {
+  width: 64px;
+}
+
+.app-rail-nav {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.6rem 0.5rem;
+  min-height: 0;
+  overflow: auto;
+}
+
+.app-rail-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  border: none;
+  border-radius: 10px;
+  padding: 0.45rem 0.55rem;
+  background: transparent;
+  color: var(--rp-text-muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  border-left: 3px solid transparent;
+}
+
+.app-rail-item i {
+  font-size: 1.05rem;
+  flex-shrink: 0;
+}
+
+.app-rail-item:hover {
+  background: var(--rp-bg-subtle);
+  color: var(--rp-text);
+}
+
+.app-rail-item--active {
+  background: var(--rp-primary-soft);
+  color: var(--rp-primary);
+  border-left-color: var(--rp-primary);
+}
+
+.app-rail--collapsed .app-rail-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.app-rail-collapse {
+  flex: 0 0 auto;
+  border: none;
+  border-top: 1px solid var(--rp-border);
+  background: var(--rp-bg-panel);
+  padding: 0.45rem;
+  cursor: pointer;
+  color: var(--rp-text-muted);
+  font-size: 1rem;
+}
+
+.app-rail-collapse:hover {
+  background: var(--rp-bg-subtle);
+  color: var(--rp-text);
+}
+
+.builder-lateral {
+  flex: 0 0 auto;
+  width: min(380px, 36vw);
+  min-width: 280px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  background: var(--rp-bg-panel);
+  border-right: 1px solid var(--rp-border);
+  padding: 1rem 1rem 1.25rem;
+  gap: 0.35rem;
+}
+
+.builder-lateral-header {
+  margin-bottom: 0.35rem;
+}
+
+.builder-lateral-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--rp-text);
+}
+
+.builder-lateral-sub {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  color: var(--rp-text-muted);
+  line-height: 1.4;
+}
+
+.builder-lateral-section-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--rp-text);
+}
+
+.builder-context {
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--rp-border);
+  border-radius: 12px;
+  background: var(--rp-bg-canvas);
+}
+
+.builder-context-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.builder-context-heading {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--rp-text-muted);
+}
+
+.builder-context-list {
+  margin: 0;
+}
+
+.builder-context-row {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 0.35rem 0.65rem;
+  font-size: 0.8rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--rp-border);
+}
+
+.builder-context-row:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.builder-context-row dt {
+  margin: 0;
+  font-weight: 600;
+  color: var(--rp-text-muted);
+}
+
+.builder-context-row dd {
+  margin: 0;
+  color: var(--rp-text);
+  word-break: break-word;
+}
+
+.builder-context-packs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.builder-pack-chip {
+  font-size: 0.68rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 999px;
+  background: var(--rp-primary-soft);
+  color: var(--rp-primary);
+  font-weight: 600;
+}
+
+.builder-context-row--theme dd {
+  overflow: hidden;
+}
+
+.theme-control--compact {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  white-space: normal;
+}
+
+.theme-control--compact .theme-current {
+  min-width: 7.5rem;
+  font-size: 0.78rem;
+}
+
+.theme-control--compact .theme-hint {
+  margin-top: 0;
+}
+
+.builder-feedback-ok {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 10px;
+  background: var(--rp-success-bg);
+  border: 1px solid var(--rp-success-border);
+  color: var(--rp-success-text);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.builder-feedback-ok i {
+  flex-shrink: 0;
+  margin-top: 0.08rem;
+}
+
+.builder-prompt-msg {
+  margin-top: 0.5rem;
+}
+
+.app-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--rp-bg-app);
+  padding: 0.65rem 0.85rem 0.85rem;
+  overflow: hidden;
+}
+
+.canvas-workspace-head {
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--rp-border);
+  margin-bottom: 0.75rem;
+}
+
+.workspace-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.workspace-tab {
+  border: 1px solid transparent;
+  background: var(--rp-bg-subtle);
+  color: var(--rp-text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.workspace-tab:hover {
+  color: var(--rp-text);
+}
+
+.workspace-tab--active {
+  background: var(--rp-primary-soft);
+  border-color: rgba(26, 102, 255, 0.28);
+  color: var(--rp-primary);
+}
+
+.canvas-header-top--tools {
+  justify-content: flex-start;
+  margin-top: 0.25rem;
+  padding-top: 0.65rem;
+  border-top: none;
+}
+
+.editor-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  overflow: auto;
+}
+
+.editor-data-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.editor-data-preview {
+  margin: 0;
+  padding: 0.85rem;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  overflow: auto;
+  max-height: min(560px, 55vh);
+  border: 1px solid var(--rp-border);
+}
+
+.editor-states-hint {
+  margin: 0;
+  max-width: 42rem;
+  color: var(--rp-text-muted);
+  line-height: 1.55;
+  font-size: 0.9rem;
+}
+
+.flow-workspace-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0 0.25rem;
+}
+
+.workspace-tabs--flow {
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--rp-border);
+}
+
+.flow-toolbar--split {
+  flex-wrap: wrap;
+  padding: 0;
+}
+
+.flow-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-right: 0.35rem;
+  margin-right: 0.15rem;
+  border-right: 1px solid var(--rp-border);
+}
+
+.flow-zoom-readout {
+  min-width: 2.75rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--rp-text-muted);
+  text-align: right;
+}
+
+.flow-zoom-btn {
+  min-width: 2rem;
+  padding: 0.28rem 0.4rem;
+}
+
+.flow-tab-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.flow-aux-panel {
+  padding: 0.75rem 0;
+}
+
+.flow-tab-panel--muted {
+  padding: 1rem;
+}
+
+.nav-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-placeholder-inner {
+  text-align: center;
+  max-width: 24rem;
+  padding: 2rem 1rem;
+}
+
+.nav-placeholder-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+  color: var(--rp-text);
+}
+
+.nav-placeholder-text {
+  margin: 0;
+  color: var(--rp-text-muted);
+  line-height: 1.5;
+  font-size: 0.9rem;
+}
+
+.nav-placeholder-back {
+  margin-top: 1.25rem;
+}
+
+.app-statusbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.35rem 1rem;
+  background: var(--rp-bg-panel);
+  border-top: 1px solid var(--rp-border);
+  font-size: 0.78rem;
+  color: var(--rp-text-muted);
+}
+
+.app-statusbar-left,
+.app-statusbar-center,
+.app-statusbar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.app-statusbar-center {
+  flex: 0 1 auto;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.app-statusbar-right {
+  flex-shrink: 0;
+  color: var(--rp-text);
+  font-weight: 500;
+}
+
+.app-statusbar-sep {
+  opacity: 0.45;
+}
+
+.app-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #9ca3af;
+  flex-shrink: 0;
+}
+
+.app-status-dot--ok {
+  background: #22c55e;
+}
+
+.app-status-name {
+  font-weight: 600;
+  color: var(--rp-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-statusbar-ic {
+  color: #22c55e;
+  flex-shrink: 0;
+}
+
+.builder-prompt-textarea {
+  margin-top: 0.65rem;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--rp-border);
+  border-radius: 10px;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
+  padding: 0.6rem;
+  min-height: 130px;
+  resize: vertical;
+}
+
+.builder-prompt-textarea::placeholder {
+  color: #9ca3af;
+}
+
 .canvas-wrap {
   border: 1px solid var(--rp-border);
   padding: 0;
   background: var(--rp-bg-panel);
   box-shadow: var(--rp-shadow-sm);
-  min-height: calc(100vh - 2.5rem);
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -3604,7 +4563,8 @@ function onPromptKeydown(event: KeyboardEvent) {
   padding: 0.24rem 0 0;
 }
 
-.ux-recommendation-bubble-list >{
+.ux-recommendation-bubble-list {
+  display: flex;
   align-items: center;
   gap: 0.35rem;
 }
@@ -3778,26 +4738,6 @@ function onPromptKeydown(event: KeyboardEvent) {
   color: var(--rp-text-muted);
 }
 
-.floating-prompt {
-  position: fixed;
-  z-index: 1000;
-  right: 1.4rem;
-  bottom: 1.4rem;
-  width: min(420px, calc(100vw - 2.8rem));
-  background: var(--rp-bg-panel);
-  border: 1px solid var(--rp-border);
-  border-radius: 14px;
-  padding: 1rem;
-  box-shadow: var(--rp-shadow-md);
-}
-
-.floating-prompt h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--rp-text);
-}
-
 .conversation-list {
   margin-top: 0.65rem;
   display: flex;
@@ -3891,44 +4831,6 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .prompt-action-btn i {
   font-size: 1.08rem;
-}
-
-.floating-prompt textarea {
-  margin-top: 0.65rem;
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid var(--rp-border);
-  border-radius: 10px;
-  background: var(--rp-bg-panel);
-  color: var(--rp-text);
-  padding: 0.6rem;
-  min-height: 130px;
-  resize: vertical;
-}
-
-.floating-prompt textarea::placeholder {
-  color: #9ca3af;
-}
-
-.floating-prompt button {
-  margin-top: 0.6rem;
-  margin-right: 0.2rem;
-  padding: 0.58rem;
-  cursor: pointer;
-  font-weight: 600;
-  padding: 0.58rem;
-  cursor: pointer;
-}
-
-.floating-prompt .conversation-toggle-btn {
-  border-radius: 999px;
-  background: var(--rp-bg-panel);
-  color: var(--rp-text-muted);
-}
-
-.floating-prompt .conversation-toggle-btn:hover:not(:disabled) {
-  background: var(--rp-bg-subtle);
-  color: var(--rp-text);
 }
 
 .data-editor-overlay {
@@ -4101,7 +5003,18 @@ function onPromptKeydown(event: KeyboardEvent) {
   min-height: 42px;
 }
 
-.floating-prompt button:disabled {
+.builder-lateral .conversation-toggle-btn {
+  border-radius: 999px;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text-muted);
+}
+
+.builder-lateral .conversation-toggle-btn:hover:not(:disabled) {
+  background: var(--rp-bg-subtle);
+  color: var(--rp-text);
+}
+
+.builder-lateral .prompt-actions button:disabled {
   opacity: 0.65;
   cursor: not-allowed;
 }
