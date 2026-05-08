@@ -2601,7 +2601,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             :aria-label="isConversationVisible ? 'Ocultar historial de conversación' : 'Mostrar historial de conversación'"
             @click="toggleConversationVisibility"
           >
-            <i class="bi conversation-toggle-icon" :class="isConversationVisible ? 'bi-eye-slash' : 'bi-eye'" aria-hidden="true"></i>
+            <i class="bi bi-chat-left-text" aria-hidden="true"></i>
           </button>
         </div>
         <div v-if="isConversationVisible" id="conversation-list" class="conversation-list">
@@ -3097,48 +3097,49 @@ function onPromptKeydown(event: KeyboardEvent) {
       </svg>
       <article class="canvas-surface flow-surface">
         <div class="flow-workspace-head">
-          <div class="workspace-tabs workspace-tabs--flow" role="tablist" aria-label="Vista del flujo">
-            <button
-              type="button"
-              role="tab"
-              class="workspace-tab"
-              :class="{ 'workspace-tab--active': flowWorkspaceTab === 'canvas' }"
-              :aria-selected="flowWorkspaceTab === 'canvas'"
-              @click="flowWorkspaceTab = 'canvas'"
-            >
-              Lienzo
-            </button>
-            <button
-              type="button"
-              role="tab"
-              class="workspace-tab"
-              :class="{ 'workspace-tab--active': flowWorkspaceTab === 'data' }"
-              :aria-selected="flowWorkspaceTab === 'data'"
-              @click="flowWorkspaceTab = 'data'"
-            >
-              Datos
-            </button>
-            <button
-              type="button"
-              role="tab"
-              class="workspace-tab"
-              :class="{ 'workspace-tab--active': flowWorkspaceTab === 'states' }"
-              :aria-selected="flowWorkspaceTab === 'states'"
-              @click="flowWorkspaceTab = 'states'"
-            >
-              Estados
-            </button>
-          </div>
           <div class="flow-toolbar flow-toolbar--split">
-            <h2 class="text-body-emphasis flow-toolbar-title">Flujo de tareas</h2>
+            <div class="flow-toolbar-left">
+              <div class="workspace-tabs workspace-tabs--flow" role="tablist" aria-label="Vista del flujo">
+                <button
+                  type="button"
+                  role="tab"
+                  class="workspace-tab"
+                  :class="{ 'workspace-tab--active': flowWorkspaceTab === 'canvas' }"
+                  :aria-selected="flowWorkspaceTab === 'canvas'"
+                  @click="flowWorkspaceTab = 'canvas'"
+                >
+                  Lienzo
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  class="workspace-tab"
+                  :class="{ 'workspace-tab--active': flowWorkspaceTab === 'data' }"
+                  :aria-selected="flowWorkspaceTab === 'data'"
+                  @click="flowWorkspaceTab = 'data'"
+                >
+                  Datos
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  class="workspace-tab"
+                  :class="{ 'workspace-tab--active': flowWorkspaceTab === 'states' }"
+                  :aria-selected="flowWorkspaceTab === 'states'"
+                  @click="flowWorkspaceTab = 'states'"
+                >
+                  Estados
+                </button>
+              </div>
+            </div>
             <div class="flow-toolbar-actions">
               <div class="flow-zoom-controls" aria-label="Zoom del lienzo">
                 <span class="flow-zoom-readout">{{ flowZoomPercent }}%</span>
                 <button type="button" class="screen-action-btn flow-zoom-btn" title="Alejar" aria-label="Alejar" @click="flowZoomOut">
-                  −
+                  <i class="bi bi-zoom-out" aria-hidden="true"></i>
                 </button>
                 <button type="button" class="screen-action-btn flow-zoom-btn" title="Acercar" aria-label="Acercar" @click="flowZoomIn">
-                  +
+                  <i class="bi bi-zoom-in" aria-hidden="true"></i>
                 </button>
                 <button
                   type="button"
@@ -3150,14 +3151,14 @@ function onPromptKeydown(event: KeyboardEvent) {
                   <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i>
                 </button>
               </div>
-              <button type="button" class="screen-action-btn flow-toolbar-btn" @click="navigateToBuilder()">Abrir builder</button>
               <button
                 type="button"
                 class="screen-action-btn flow-toolbar-btn"
                 :disabled="screens.length === 0"
                 @click="addFlowTask"
               >
-                + Nueva tarea
+                <i class="bi bi-plus-lg" aria-hidden="true"></i>
+                Nueva tarea
               </button>
               <button
                 type="button"
@@ -3165,6 +3166,7 @@ function onPromptKeydown(event: KeyboardEvent) {
                 :disabled="!selectedFlowEdgeId"
                 @click="removeSelectedFlowEdge"
               >
+                <i class="bi bi-trash3" aria-hidden="true"></i>
                 Eliminar flecha seleccionada
               </button>
             </div>
@@ -3763,7 +3765,6 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .canvas-workspace-head {
   padding-bottom: 0.65rem;
-  border-bottom: 1px solid var(--rp-border);
   margin-bottom: 0.75rem;
   display: flex;
   justify-content: space-between;
@@ -3788,9 +3789,13 @@ function onPromptKeydown(event: KeyboardEvent) {
   color: var(--rp-text-muted);
   font-size: 0.8rem;
   font-weight: 600;
-  padding: 0.35rem 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  height: 2rem;
+  padding: 0 0.75rem;
   border-radius: 999px;
   cursor: pointer;
+  line-height: 1;
 }
 
 .workspace-tab:hover {
@@ -3878,17 +3883,16 @@ function onPromptKeydown(event: KeyboardEvent) {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
-  padding: 0 0.25rem;
+  padding: 1.25rem 1.5rem 1rem;
 }
 
 .workspace-tabs--flow {
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid var(--rp-border);
+  padding-bottom: 0;
 }
 
 .flow-toolbar--split {
   flex-wrap: wrap;
-  padding: 0;
+  padding: 0.35rem 0.45rem;
 }
 
 .flow-zoom-controls {
@@ -4107,7 +4111,6 @@ function onPromptKeydown(event: KeyboardEvent) {
   min-width: 86px;
   background: var(--rp-bg-panel);
   color: var(--rp-text);
-  height: 2rem;
   padding: 0.38rem 0.6rem;
   cursor: pointer;
   font-weight: 500;
@@ -4223,19 +4226,34 @@ function onPromptKeydown(event: KeyboardEvent) {
   justify-content: space-between;
   align-items: center;
   gap: 0.75rem;
-  padding: 0 0.25rem;
+  padding: 0;
 }
 
-.flow-toolbar h2 {
-  margin: 0;
-  font-size: 1.02rem;
-  color: var(--rp-text);
+.flow-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.workspace-tabs {
+  align-items: stretch;
 }
 
 .flow-toolbar-actions {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+}
+
+.flow-toolbar-actions .screen-action-btn i {
+  margin-right: 0.25rem;
+  font-size: 0.92rem;
 }
 
 .flow-toolbar-btn-soft {
@@ -4247,7 +4265,6 @@ function onPromptKeydown(event: KeyboardEvent) {
   position: relative;
   overflow: auto;
   border: 1px solid var(--rp-border);
-  border-radius: 12px;
   background-color: var(--rp-bg-canvas);
   background-image: radial-gradient(circle, #d1d5db 1px, transparent 1px);
   background-size: 20px 20px;
@@ -4777,7 +4794,9 @@ function onPromptKeydown(event: KeyboardEvent) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
+  padding: 0 0.5rem;
+  border: 1px solid var(--rp-border);
+  border-width: 1px;
   cursor: pointer;
   font-size: 0.72rem;
   line-height: 1;
