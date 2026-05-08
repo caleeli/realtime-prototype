@@ -12,7 +12,7 @@ import {
   type Ref,
   watch,
 } from 'vue';
-import { VueFlow, Handle, Position } from '@vue-flow/core';
+import { ConnectionMode, VueFlow, Handle, Position } from '@vue-flow/core';
 import '@vue-flow/core/dist/style.css';
 
 import {
@@ -122,10 +122,20 @@ type FlowTask = {
   screenId: string;
 };
 
+type FlowConnection = {
+  source?: string;
+  target?: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+};
+
 type FlowEdge = {
   id: string;
   source: string;
   target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+  style?: Record<string, string | number>;
 };
 
 type FlowNode = {
@@ -202,6 +212,7 @@ const isBuilderMinimized = ref(false);
 const flowTaskCounter = ref(1);
 const flowTasks = ref<FlowTask[]>([]);
 const flowEdges = ref<FlowEdge[]>([]);
+const selectedFlowEdgeId = ref('');
 const flowTaskPreviews = ref<Record<string, FlowTaskPreviewState>>({});
 const flowNodes = ref<FlowNode[]>([]);
 const explodingBubbleId = ref<string | null>(null);
@@ -361,6 +372,8 @@ function removeFlowTaskById(taskId: string) {
   flowEdges.value = flowEdges.value.filter(
     (edge) => taskIdSet.has(edge.source) && taskIdSet.has(edge.target),
   );
+  selectedFlowEdgeId.value = '';
+  syncFlowEdgeSelectionStyle();
   flowTasks.value = nextTasks;
 }
 
@@ -379,6 +392,8 @@ function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.val
     flowTaskPreviews.value = {};
     flowNodes.value = [];
     flowEdges.value = [];
+    selectedFlowEdgeId.value = '';
+    syncFlowEdgeSelectionStyle();
     flowTasks.value = [];
     return;
   }
@@ -421,6 +436,13 @@ function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.val
   flowEdges.value = flowEdges.value.filter(
     (edge) => validTaskIds.has(edge.source) && validTaskIds.has(edge.target),
   );
+  if (selectedFlowEdgeId.value) {
+    const selectedStillExists = flowEdges.value.some((edge) => edge.id === selectedFlowEdgeId.value);
+    if (!selectedStillExists) {
+      selectedFlowEdgeId.value = '';
+    }
+  }
+  syncFlowEdgeSelectionStyle();
   flowTaskPreviews.value = Object.fromEntries(
     Object.entries(flowTaskPreviews.value).filter(([taskId]) => validTaskIds.has(taskId)),
   );
@@ -592,16 +614,22 @@ function onFlowTaskScreenChange(taskId: string, event: Event) {
   void ensureFlowTaskPreview(taskId, selectedScreenId);
 }
 
-function onFlowConnect(connection: { source?: string; target?: string }) {
+function onFlowConnect(connection: FlowConnection) {
   if (!connection.source || !connection.target) {
     return;
   }
   if (connection.source === connection.target) {
     return;
   }
+  const sourceHandle = connection.sourceHandle ?? null;
+  const targetHandle = connection.targetHandle ?? null;
 
   const exists = flowEdges.value.some(
-    (edge) => edge.source === connection.source && edge.target === connection.target,
+    (edge) =>
+      edge.source === connection.source &&
+      edge.target === connection.target &&
+      (edge.sourceHandle ?? null) === sourceHandle &&
+      (edge.targetHandle ?? null) === targetHandle,
   );
   if (exists) {
     return;
@@ -610,11 +638,83 @@ function onFlowConnect(connection: { source?: string; target?: string }) {
   flowEdges.value = [
     ...flowEdges.value,
     {
-      id: `edge-${Date.now()}-${connection.source}-${connection.target}`,
+      id: `edge-${Date.now()}-${connection.source}-${sourceHandle ?? 'default'}-${connection.target}-${targetHandle ?? 'default'}`,
       source: connection.source,
       target: connection.target,
+      sourceHandle,
+      targetHandle,
     },
   ];
+  selectedFlowEdgeId.value = '';
+  syncFlowEdgeSelectionStyle();
+}
+
+function buildFlowEdgeStyle(edgeId: string) {
+  const isSelected = selectedFlowEdgeId.value === edgeId;
+  return isSelected
+    ? {
+        stroke: 'var(--rp-primary-hover)',
+        strokeWidth: 3,
+        markerEnd: 'url(#rp-task-flow-arrow)',
+      }
+    : {
+        stroke: 'var(--rp-primary)',
+        strokeWidth: 2,
+        markerEnd: 'url(#rp-task-flow-arrow)',
+      };
+}
+
+function syncFlowEdgeSelectionStyle() {
+  flowEdges.value = flowEdges.value.map((edge) => ({
+    ...edge,
+    style: {
+      ...buildFlowEdgeStyle(edge.id),
+    },
+  }));
+}
+
+function removeFlowEdgeById(edgeId: string) {
+  flowEdges.value = flowEdges.value.filter((edge) => edge.id !== edgeId);
+  if (selectedFlowEdgeId.value === edgeId) {
+    selectedFlowEdgeId.value = '';
+  }
+  syncFlowEdgeSelectionStyle();
+}
+
+function removeSelectedFlowEdge() {
+  if (!selectedFlowEdgeId.value) {
+    return;
+  }
+  removeFlowEdgeById(selectedFlowEdgeId.value);
+}
+
+function onFlowEdgeClick(firstArg: unknown, secondArg: unknown) {
+  const candidates: unknown[] = [firstArg, secondArg];
+  const getId = (candidate: unknown): string => {
+    if (!candidate || typeof candidate !== 'object') {
+      return '';
+    }
+    const record = candidate as { id?: unknown; edge?: unknown };
+    if (typeof record.id === 'string') {
+      return record.id;
+    }
+    const edge = record.edge as { id?: unknown };
+    if (edge && typeof edge.id === 'string') {
+      return edge.id;
+    }
+    return '';
+  };
+
+  const edgeId = candidates.reduce((found, candidate) => found || getId(candidate), '');
+  if (edgeId) {
+    selectedFlowEdgeId.value = edgeId;
+    syncFlowEdgeSelectionStyle();
+  }
+}
+
+function onFlowPaneClick() {
+  selectedFlowEdgeId.value = '';
+  syncFlowEdgeSelectionStyle();
 }
 
 function onFlowNodeInput(taskId: string, event: Event) {
@@ -2186,6 +2286,22 @@ function onPromptKeydown(event: KeyboardEvent) {
     </section>
 
     <section v-else class="canvas-wrap">
+      <svg aria-hidden="true" class="flow-edge-marker-defs">
+        <defs>
+          <marker
+            id="rp-task-flow-arrow"
+            viewBox="0 0 12 12"
+            refX="11"
+            refY="6"
+            markerWidth="8"
+            markerHeight="8"
+            orient="auto"
+            markerUnits="strokeWidth"
+          >
+            <path d="M 0 0 L 12 6 L 0 12 z" />
+          </marker>
+        </defs>
+      </svg>
       <article class="canvas-surface flow-surface">
         <div class="flow-toolbar">
           <h2 class="text-body-emphasis flow-toolbar-title">Flujo de tareas</h2>
@@ -2201,6 +2317,14 @@ function onPromptKeydown(event: KeyboardEvent) {
             >
               + Nueva tarea
             </button>
+            <button
+              type="button"
+              class="screen-action-btn flow-toolbar-btn flow-toolbar-btn-soft"
+              :disabled="!selectedFlowEdgeId"
+              @click="removeSelectedFlowEdge"
+            >
+              Eliminar flecha seleccionada
+            </button>
           </div>
         </div>
         <div v-if="flowNodes.length === 0" class="canvas-state">
@@ -2214,16 +2338,67 @@ function onPromptKeydown(event: KeyboardEvent) {
             :fit-view-on-init="true"
             :pan-on-drag="false"
             :zoom-on-scroll="false"
+            :connection-mode="ConnectionMode.Loose"
             :nodes-draggable="true"
             :snap-to-grid="true"
             :snap-grid="[20, 20]"
             class="flow-canvas-instance"
             @connect="onFlowConnect"
+            @edge-click="onFlowEdgeClick"
+            @pane-click="onFlowPaneClick"
           >
             <template #node-flow-task="{ id }">
               <div class="flow-task">
-                <Handle type="target" :position="Position.Left" id="in" class="flow-handle" />
-                <Handle type="source" :position="Position.Right" id="out" class="flow-handle" />
+                <Handle type="source" id="anchor-top-1" :position="Position.Top" class="flow-handle" :style="{ left: '32%' }" />
+                <Handle
+                  type="source"
+                  id="anchor-top-2"
+                  :position="Position.Top"
+                  class="flow-handle"
+                  :style="{ left: '68%' }"
+                />
+                <Handle
+                  type="source"
+                  id="anchor-bottom-1"
+                  :position="Position.Bottom"
+                  class="flow-handle"
+                  :style="{ left: '32%' }"
+                />
+                <Handle
+                  type="source"
+                  id="anchor-bottom-2"
+                  :position="Position.Bottom"
+                  class="flow-handle"
+                  :style="{ left: '68%' }"
+                />
+                <Handle
+                  type="source"
+                  id="anchor-left-1"
+                  :position="Position.Left"
+                  class="flow-handle"
+                  :style="{ top: '32%' }"
+                />
+                <Handle
+                  type="source"
+                  id="anchor-left-2"
+                  :position="Position.Left"
+                  class="flow-handle"
+                  :style="{ top: '68%' }"
+                />
+                <Handle
+                  type="source"
+                  id="anchor-right-1"
+                  :position="Position.Right"
+                  class="flow-handle"
+                  :style="{ top: '32%' }"
+                />
+                <Handle
+                  type="source"
+                  id="anchor-right-2"
+                  :position="Position.Right"
+                  class="flow-handle"
+                  :style="{ top: '68%' }"
+                />
                 <header class="flow-task-header">
                   <input
                     class="flow-task-title"
@@ -2834,6 +3009,7 @@ function onPromptKeydown(event: KeyboardEvent) {
   background: var(--rp-bg-subtle);
 }
 
+
 .flow-canvas {
   position: relative;
   overflow: auto;
@@ -2866,14 +3042,29 @@ function onPromptKeydown(event: KeyboardEvent) {
 .flow-canvas-instance :deep(.vue-flow__edge path) {
   stroke: var(--rp-primary);
   stroke-width: 2;
+  marker-end: url(#rp-task-flow-arrow);
+  transition:
+    stroke 0.18s ease,
+    stroke-width 0.18s ease;
+}
+
+.flow-edge-marker-defs {
+  width: 0;
+  height: 0;
+  position: absolute;
+  pointer-events: none;
+}
+
+.flow-edge-marker-defs path {
+  fill: var(--rp-primary);
 }
 
 .flow-handle {
   width: 10px;
   height: 10px;
+  border-radius: 2px;
   background: var(--rp-primary);
   border: 2px solid var(--rp-bg-panel);
-  border-radius: 999px;
 }
 
 .flow-task {
