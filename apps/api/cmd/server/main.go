@@ -756,9 +756,10 @@ type pugGenerationResponse struct {
 }
 
 type uxEvaluatorRequest struct {
-	Pug  string      `json:"pug"`
-	Css  string      `json:"css"`
-	Data interface{} `json:"data"`
+	Pug                    string   `json:"pug"`
+	Css                    string   `json:"css"`
+	Data                   interface{} `json:"data"`
+	PreviousRecommendations []string `json:"previousRecommendations"`
 }
 
 type cerebrasChatMessage struct {
@@ -2172,7 +2173,162 @@ func callCerebrasUXEvaluator(ctx context.Context, input uxEvaluatorRequest) (str
 		return "", err
 	}
 
-	return sanitizeUxEvaluatorText(outputContent), nil
+	return filterExistingUXEvaluatorRecommendations(
+		sanitizeUxEvaluatorText(outputContent),
+		input.PreviousRecommendations,
+	), nil
+}
+
+func filterExistingUXEvaluatorRecommendations(output string, existingRecommendations []string) string {
+	if strings.TrimSpace(output) == "" {
+		return ""
+	}
+
+	existing := normalizeUXRecommendationSet(existingRecommendations)
+	if len(existing) == 0 {
+		return output
+	}
+
+	lines := strings.Split(output, "\n")
+	filtered := make([]string, 0, len(lines))
+	seen := make(map[string]struct{}, len(existing))
+
+	for _, line := range lines {
+		normalized := normalizeUXRecommendation(line)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := existing[normalized]; exists {
+			continue
+		}
+		if _, duplicate := seen[normalized]; duplicate {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		filtered = append(filtered, strings.TrimSpace(line))
+	}
+
+	return strings.Join(filtered, "\n")
+}
+
+func normalizeUXRecommendationSet(recommendations []string) map[string]struct{} {
+	normalized := map[string]struct{}{}
+	for _, recommendation := range recommendations {
+		key := normalizeUXRecommendation(recommendation)
+		if key == "" {
+			continue
+		}
+		normalized[key] = struct{}{}
+	}
+	return normalized
+}
+
+func normalizeUXRecommendation(raw string) string {
+	cleaned := strings.TrimSpace(raw)
+	if cleaned == "" {
+		return ""
+	}
+	if strings.EqualFold(cleaned, "No issues identified.") {
+		return ""
+	}
+	cleaned = strings.ReplaceAll(cleaned, "\r", "")
+	lower := strings.ToLower(cleaned)
+	if strings.HasPrefix(lower, "[") {
+		if close := strings.Index(lower, "]"); close >= 0 {
+			cleaned = strings.TrimSpace(cleaned[close+1:])
+		}
+	}
+
+	for _, prefix := range []string{"high", "medium", "low"} {
+		l := strings.ToLower(strings.TrimSpace(cleaned))
+		if strings.HasPrefix(l, prefix) {
+			trimmedPrefix := strings.TrimSpace(cleaned[len(prefix):])
+			trimmedPrefix = strings.TrimPrefix(trimmedPrefix, "-")
+			trimmedPrefix = strings.TrimPrefix(trimmedPrefix, ":")
+			cleaned = strings.TrimSpace(trimmedPrefix)
+			break
+		}
+	}
+
+	return strings.ToLower(strings.Join(strings.Fields(cleaned), " "))
+}
+
+func buildUxEvaluatorRequestMessages(input uxEvaluatorRequest) ([]cerebrasChatMessage, error) {
+	systemPrompt := strings.TrimSpace(loadUxEvaluatorSystemPromptTemplate())
+	if systemPrompt == "" {
+		return nil, fmt.Errorf("ux evaluator system prompt is empty")
+	}
+
+	uxTemplate := loadPromptTemplateFromEnv(
+		uxEvaluatorSystemPromptTemplatePath,
+		uxEvaluatorSystemPromptTemplateEnv,
+		defaultUxEvaluatorPromptTemplate(),
+	)
+	_, templatePrompt, err := splitPromptFile(uxTemplate)
+	if err != nil {
+		return nil, err
+	}
+	templatePrompt = strings.TrimSpace(templatePrompt)
+	if templatePrompt == "" {
+		return nil, fmt.Errorf("ux evaluator user template is empty")
+	}
+
+	dataJSON, err := json.Marshal(input.Data)
+	if err != nil {
+		dataJSON = []byte("{}")
+	}
+
+	renderedPrompt := strings.ReplaceAll(templatePrompt, "{{{pug}}}", input.Pug)
+	renderedPrompt = strings.ReplaceAll(renderedPrompt, "{{{css}}}", input.Css)
+	renderedPrompt = strings.ReplaceAll(renderedPrompt, "{{{data}}}", string(dataJSON))
+	renderedPrompt = strings.TrimSpace(renderedPrompt)
+	if renderedPrompt == "" {
+		return nil, fmt.Errorf("ux evaluator user template is empty")
+	}
+
+	existing := filterUXRecommendations(input.PreviousRecommendations)
+	if len(existing) > 0 {
+		renderedPrompt += "\n\nExisting pending recommendations from previous evaluations:\n"
+		for _, recommendation := range existing {
+			renderedPrompt += "- " + strings.TrimSpace(recommendation) + "\n"
+		}
+		renderedPrompt += "\nReview the updated screen with these pending recommendations in mind:\n"
+		renderedPrompt += "- Keep a recommendation if it is still unresolved.\n"
+		renderedPrompt += "- Remove it if it was fixed in the current screen.\n"
+		renderedPrompt += "- Add any new recommendations that are missing.\n"
+		renderedPrompt += "- Return ONLY unresolved recommendations, never repeated lines.\n"
+		renderedPrompt += "If there are no unresolved recommendations, return: No issues identified."
+	}
+
+	return []cerebrasChatMessage{
+		{
+			Role:    "system",
+			Content: systemPrompt,
+		},
+		{
+			Role:    "user",
+			Content: renderedPrompt,
+		},
+	}, nil
+}
+
+func filterUXRecommendations(recommendations []string) []string {
+	normalized := make(map[string]struct{}, len(recommendations))
+	filtered := make([]string, 0, len(recommendations))
+
+	for _, recommendation := range recommendations {
+		key := normalizeUXRecommendation(recommendation)
+		if key == "" {
+			continue
+		}
+		if _, exists := normalized[key]; exists {
+			continue
+		}
+		normalized[key] = struct{}{}
+		filtered = append(filtered, recommendation)
+	}
+
+	return filtered
 }
 
 func buildCerebrasRequestMessages(input generationRequest) []cerebrasChatMessage {
@@ -2494,6 +2650,7 @@ Use this line format:
 	[High|Medium|Low] issue - recommendation
 If no findings are identified, return exactly:
 No issues identified.
+If an existing pending recommendations list is provided, review each item against the current screen and only return the recommendations that are still unresolved.
 The Pug provided uses BootstrapVue components (for example: b-form, b-form-group, b-form-input,
 b-form-select, b-button, b-form-invalid-feedback), and these tags should be interpreted as their
 corresponding interactive UI elements.
@@ -2596,6 +2753,7 @@ func loadUxEvaluatorSystemPromptTemplate() string {
 Return only plain text and no JSON.
 Each line must follow: [High|Medium|Low] issue - recommendation.
 If no findings, return: No issues identified.
+When pending recommendations are provided, return only unresolved recommendations and remove those already fixed.
 Treat the provided Pug as BootstrapVue template syntax. Tags such as b-form, b-form-group,
 b-form-input, b-button, and b-form-invalid-feedback represent real interactive UI controls
 and form feedback rendered by BootstrapVue.
@@ -2610,49 +2768,6 @@ Do not use markdown, code blocks, or extra prose.`
 		return systemPrompt
 	}
 	return defaultPrompt
-}
-
-func buildUxEvaluatorRequestMessages(input uxEvaluatorRequest) ([]cerebrasChatMessage, error) {
-	systemPrompt := strings.TrimSpace(loadUxEvaluatorSystemPromptTemplate())
-	if systemPrompt == "" {
-		return nil, fmt.Errorf("ux evaluator system prompt is empty")
-	}
-
-	uxTemplate := loadPromptTemplateFromEnv(
-		uxEvaluatorSystemPromptTemplatePath,
-		uxEvaluatorSystemPromptTemplateEnv,
-		defaultUxEvaluatorPromptTemplate(),
-	)
-	_, templatePrompt, err := splitPromptFile(uxTemplate)
-	if err != nil {
-		return nil, err
-	}
-	templatePrompt = strings.TrimSpace(templatePrompt)
-	if templatePrompt == "" {
-		return nil, fmt.Errorf("ux evaluator user template is empty")
-	}
-
-	dataJSON, err := json.Marshal(input.Data)
-	if err != nil {
-		dataJSON = []byte("{}")
-	}
-
-	renderedPrompt := strings.ReplaceAll(templatePrompt, "{{{pug}}}", input.Pug)
-	renderedPrompt = strings.ReplaceAll(renderedPrompt, "{{{css}}}", input.Css)
-	renderedPrompt = strings.ReplaceAll(renderedPrompt, "{{{data}}}", string(dataJSON))
-	if strings.TrimSpace(renderedPrompt) == "" {
-		return nil, fmt.Errorf("ux evaluator user template is empty")
-	}
-	return []cerebrasChatMessage{
-		{
-			Role:    "system",
-			Content: systemPrompt,
-		},
-		{
-			Role:    "user",
-			Content: renderedPrompt,
-		},
-	}, nil
 }
 
 func loadGenerationSystemPromptTemplate() string {

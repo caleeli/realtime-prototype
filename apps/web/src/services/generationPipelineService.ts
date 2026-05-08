@@ -123,6 +123,7 @@ export interface UXEvaluatorRequest {
   readonly pug: string;
   readonly css: string;
   readonly data?: unknown;
+  readonly previousRecommendations?: string[];
 }
 
 export class GenerationServiceError extends Error {

@@ -25,6 +25,7 @@ import {
   type DataGenerationRequest,
   type PugGenerationRequest,
 } from './services/generationPipelineService';
+import { BButton } from 'bootstrap-vue-next';
 import {
   buildGeneratedScreen,
   type GeneratedScreenView,
@@ -73,6 +74,10 @@ const componentLoaders: NonNullable<GenerationRenderOptions['componentLoaders']>
   pmTable: createFallbackComponent('pm-table'),
   'pm-table': createFallbackComponent('pm-table'),
   DropzoneUploader: createFallbackComponent('DropzoneUploader'),
+  BButton: () => Promise.resolve(BButton),
+  'b-button': () => Promise.resolve(BButton),
+  BBtn: () => Promise.resolve(BButton),
+  'b-btn': () => Promise.resolve(BButton),
   VueChart: () => import('./components/charts/VueChart'),
   'vue-chart': () => import('./components/charts/VueChart'),
   Vuechart: () => import('./components/charts/VueChart'),
@@ -1689,11 +1694,27 @@ function parseUxRecommendation(observation: string) {
   };
 }
 
+function getPendingUxRecommendationsForEvaluation(): string[] {
+  const existing = uxEvaluations.value
+    .map((entry) => entry.trim())
+    .filter((entry) => entry);
+  if (existing.length === 0) {
+    return [];
+  }
+  return existing;
+}
+
 const actionableUxRecommendations = computed<UXRecommendationBubble[]>(() => {
+  const severityPriority: Record<UXRecommendationSeverity, number> = {
+    high: 0,
+    medium: 1,
+    low: 2,
+  };
+
   return uxEvaluations.value
     .map((observation, index): UXRecommendationBubble | null => {
       const parsed = parseUxRecommendation(observation);
-      if (!parsed || (parsed.severity !== 'high' && parsed.severity !== 'medium')) {
+      if (!parsed) {
         return null;
       }
 
@@ -1704,8 +1725,33 @@ const actionableUxRecommendations = computed<UXRecommendationBubble[]>(() => {
         requestText: parsed.requestText,
       };
     })
-    .filter((entry): entry is UXRecommendationBubble => entry !== null);
+    .filter((entry): entry is UXRecommendationBubble => entry !== null)
+    .sort((a, b) => {
+      const priorityDelta = severityPriority[a.severity] - severityPriority[b.severity];
+      return priorityDelta;
+    });
 });
+
+function getUxRecommendationPriority(recommendation: string): number {
+  const parsed = parseUxRecommendation(recommendation);
+  if (!parsed) {
+    return 99;
+  }
+  if (parsed.severity === 'high') {
+    return 0;
+  }
+  if (parsed.severity === 'medium') {
+    return 1;
+  }
+  return 2;
+}
+
+function sortUxRecommendationsByPriority(recommendations: string[]): string[] {
+  return [...recommendations]
+    .map((item) => item.trim())
+    .filter((item) => item)
+    .sort((a, b) => getUxRecommendationPriority(a) - getUxRecommendationPriority(b));
+}
 
 function getScreenSaveState(screen: SessionScreenSummary) {
   if (screen.id === activeScreenId.value && isScreenDirty.value) {
@@ -1726,7 +1772,6 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
 
   isGenerating.value = true;
   message.value = 'Generando pantalla...';
-  uxEvaluations.value = [];
   uxEvaluationStatus.value = 'idle';
   uxEvaluationMessage.value = '';
   const previousStyleCleanup = cleanupStyle.value;
@@ -1763,18 +1808,20 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
     uxEvaluationStatus.value = 'loading';
     uxEvaluationMessage.value = 'Evaluando UX...';
     try {
+      const existingRecommendations = getPendingUxRecommendationsForEvaluation();
       const recommendations = await pipelineService.evaluateUX({
         pug: pipelineOutput.sourcePug,
         css: pipelineOutput.css,
         data: pipelineOutput.data,
+        previousRecommendations: existingRecommendations,
       });
-      uxEvaluations.value = recommendations;
+      uxEvaluations.value = sortUxRecommendationsByPriority(recommendations);
       uxEvaluationStatus.value = 'ready';
       uxEvaluationMessage.value = '';
     } catch (error) {
       uxEvaluationStatus.value = 'error';
       uxEvaluationMessage.value = error instanceof Error ? error.message : 'No se pudo obtener las recomendaciones UX.';
-      uxEvaluations.value = [];
+      uxEvaluations.value = sortUxRecommendationsByPriority(getPendingUxRecommendationsForEvaluation());
     }
 
     const renderedView = await buildGeneratedScreen(pipelineOutput, {
@@ -2284,13 +2331,14 @@ async function onUxSuggestionClick(suggestion: UXRecommendationBubble) {
 
   const bubbleId = suggestion.id;
   explodingBubbleId.value = bubbleId;
-  setTimeout(() => {
+
+  try {
+    await runGenerationFromPrompt(suggestion.requestText);
+  } finally {
     if (explodingBubbleId.value === bubbleId) {
       explodingBubbleId.value = null;
     }
-  }, 420);
-
-  await runGenerationFromPrompt(suggestion.requestText);
+  }
 }
 
 
@@ -2685,30 +2733,35 @@ function onPromptKeydown(event: KeyboardEvent) {
           </div>
         </div>
       </div>
-      <div v-if="actionableUxRecommendations.length > 0" class="ux-recommendation-bubbles">
-        <b-button
-          v-for="suggestion in actionableUxRecommendations"
-          :key="suggestion.id"
-          type="button"
-          class="ux-recommendation-bubble"
-          v-b-tooltip="{ title: suggestion.text }"
-          :class="{
-            btn: true,
-            'btn-danger': suggestion.severity === 'high',
-            'btn-warning': suggestion.severity === 'medium',
-            'btn-dark': suggestion.severity !== 'high' && suggestion.severity !== 'medium',
-            'ux-recommendation-bubble--high': suggestion.severity === 'high',
-            'ux-recommendation-bubble--medium': suggestion.severity === 'medium',
-            'ux-recommendation-bubble--burst': explodingBubbleId === suggestion.id,
-          }"
-          :aria-label="suggestion.text"
-          @click="onUxSuggestionClick(suggestion)"
+      <div v-if="actionableUxRecommendations.length > 0 || isGenerating" class="ux-recommendation-bubbles">
+        <TransitionGroup
+          name="ux-bubble"
+          tag="div"
+          class="ux-recommendation-bubble-list"
+          appear
         >
-          <span class="ux-recommendation-bubble-letter">
-            {{ suggestion.severity === 'high' ? 'H' : suggestion.severity === 'medium' ? 'M' : 'L' }}
-          </span>
-          <span class="ux-recommendation-text-visually-hidden">{{ suggestion.text }}</span>
-        </b-button>
+          <b-button
+            v-for="suggestion in actionableUxRecommendations"
+            :key="suggestion.id"
+            type="button"
+            class="ux-recommendation-bubble"
+            :variant="suggestion.severity === 'high' ? 'danger' : suggestion.severity === 'medium' ? 'warning' : 'dark'"
+            v-b-tooltip="{ title: suggestion.text }"
+            :class="{
+              'ux-recommendation-bubble--high': suggestion.severity === 'high',
+              'ux-recommendation-bubble--medium': suggestion.severity === 'medium',
+              'ux-recommendation-bubble--low': suggestion.severity === 'low',
+              'ux-recommendation-bubble--burst': explodingBubbleId === suggestion.id,
+            }"
+            :aria-label="suggestion.text"
+            @click="onUxSuggestionClick(suggestion)"
+          >
+            <span class="ux-recommendation-bubble-letter">
+              {{ suggestion.severity === 'high' ? 'H' : suggestion.severity === 'medium' ? 'M' : 'L' }}
+            </span>
+            <span class="ux-recommendation-text-visually-hidden">{{ suggestion.text }}</span>
+          </b-button>
+        </TransitionGroup>
       </div>
       <textarea
         ref="promptInput"
@@ -3279,14 +3332,14 @@ function onPromptKeydown(event: KeyboardEvent) {
   width: 100%;
   min-width: 280px;
   min-height: 260px;
-  background: var(--rp-bg-panel);
-  border: 1px solid var(--rp-border);
+  background: rgba(17, 23, 52, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 12px;
   display: grid;
   gap: 0.55rem;
   padding: 0.6rem;
-  color: var(--rp-text);
-  box-shadow: var(--rp-shadow-sm);
+  color: #f4f7ff;
+  box-shadow: 0 10px 25px rgba(2, 10, 26, 0.34);
 }
 
 .flow-task-header {
@@ -3297,10 +3350,10 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .flow-task-title {
   flex: 1;
-  border: 1px solid var(--rp-border);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 8px;
-  background: var(--rp-bg-panel);
-  color: var(--rp-text);
+  background: #0d132f;
+  color: #f4f7ff;
   padding: 0.35rem 0.55rem;
 }
 
@@ -3312,11 +3365,11 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .flow-task-screen-label {
   font-size: 0.8rem;
-  color: var(--rp-text-muted);
+  color: #c7d5ef;
 }
 
 .flow-task-screen-select {
-  border: 1px solid var(--rp-border);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 8px;
   background: var(--rp-bg-panel);
   color: var(--rp-text);
@@ -3523,7 +3576,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 .ux-recommendation-bubbles {
   display: flex;
   flex-wrap: nowrap;
-  align-items: flex-end;
+  align-items: center;
   gap: 0.35rem;
   overflow-x: auto;
   overflow-y: hidden;
@@ -3532,15 +3585,39 @@ function onPromptKeydown(event: KeyboardEvent) {
   padding: 0.24rem 0 0;
 }
 
+.ux-recommendation-bubble-list >{
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.ux-bubble-enter-active,
+.ux-bubble-leave-active,
+.ux-bubble-move {
+  transition: all 0.24s ease;
+}
+
+.ux-bubble-enter-from {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.95);
+}
+
+.ux-bubble-leave-to {
+  opacity: 0;
+  transform: translateY(4px) scale(0.95);
+}
+
+.ux-bubble-leave-active {
+  position: absolute;
+}
+
 .ux-recommendation-bubble {
-  align-self: flex-end;
-  flex: 0 0 1rem;
-  width: 1rem;
-  height: 1rem;
+  align-self: center;
+  width: auto;
   min-width: 1rem;
   min-height: 1rem;
   border-radius: 9999px;
-  padding: 0;
+  padding: 0 0.45rem 0 0.35rem;
+  height: 1.2rem;
   display: inline-flex;
   appearance: none;
   border: 0;
@@ -3578,12 +3655,20 @@ function onPromptKeydown(event: KeyboardEvent) {
   color: var(--rp-text);
 }
 
+.ux-recommendation-bubble--low {
+  border-color: rgba(var(--bs-secondary-rgb), 0.7);
+  background: color-mix(in srgb, rgba(var(--bs-secondary-rgb), 0.5) 42%, var(--rp-bg-panel));
+  color: var(--rp-text);
+}
+
 .ux-recommendation-bubble-letter {
   font-size: 0.58rem;
   line-height: 1;
   font-weight: 700;
   font-family: var(--bs-font-sans-serif);
   letter-spacing: 0.01em;
+  display: inline-flex;
+  align-items: center;
 }
 
 .ux-recommendation-text-visually-hidden {
@@ -3603,24 +3688,21 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .ux-recommendation-bubble--burst {
-  animation: ux-bubble-pop 0.38s cubic-bezier(0.15, 1.1, 0.3, 1) forwards;
+  animation: ux-bubble-recommendation-pulse 0.8s ease-in-out infinite;
 }
 
-@keyframes ux-bubble-pop {
+@keyframes ux-bubble-recommendation-pulse {
   0% {
     transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(26, 102, 255, 0.28);
   }
-  20% {
+  50% {
     transform: scale(1.07);
-    box-shadow: 0 0 0 0 rgba(26, 102, 255, 0.35);
-  }
-  60% {
-    transform: scale(1.15);
-    box-shadow: 0 0 0 10px rgba(26, 102, 255, 0);
+    box-shadow: 0 0 0 8px rgba(26, 102, 255, 0);
   }
   100% {
-    transform: scale(0.92);
-    opacity: 0.35;
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(26, 102, 255, 0.28);
   }
 }
 
@@ -3811,23 +3893,15 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .floating-prompt button {
   margin-top: 0.6rem;
-  border: 0;
-  border-radius: 8px;
-  background: var(--rp-primary);
-  color: #fff;
+  margin-right: 0.2rem;
   padding: 0.58rem;
   cursor: pointer;
   font-weight: 600;
-}
-
-.floating-prompt button:hover:not(:disabled) {
-  background: var(--rp-primary-hover);
+  padding: 0.58rem;
+  cursor: pointer;
 }
 
 .floating-prompt .conversation-toggle-btn {
-  width: auto;
-  margin-top: 0;
-  border: 1px solid var(--rp-border);
   border-radius: 999px;
   background: var(--rp-bg-panel);
   color: var(--rp-text-muted);
