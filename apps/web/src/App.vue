@@ -2490,40 +2490,6 @@ function onPromptKeydown(event: KeyboardEvent) {
           </div>
         </div>
       </article>
-      <footer class="canvas-meta">
-        <p v-if="generatedState">
-          <strong>Tags usados:</strong>
-          {{ generatedState.view.usedTags.join(', ') }}
-        </p>
-        <p v-if="generatedState && generatedState.view.unresolvedTags.length">
-          <strong>No resueltos:</strong>
-          {{ generatedState.view.unresolvedTags.join(', ') }}
-        </p>
-        <div v-if="generatedState && uxEvaluationStatus !== 'idle'" class="ux-evaluator">
-          <p class="ux-evaluator-title">
-            <strong>Recomendaciones UX:</strong>
-            <span v-if="uxEvaluationStatus === 'loading'" class="ux-evaluator-status">Evaluando...</span>
-            <span v-else-if="uxEvaluationStatus === 'error'" class="ux-evaluator-status ux-evaluator-status-error"
-              >No disponible</span
-            >
-          </p>
-          <p v-if="uxEvaluationStatus === 'error' && uxEvaluationMessage" class="ux-evaluator-message">
-            {{ uxEvaluationMessage }}
-          </p>
-          <p v-else-if="uxEvaluationStatus === 'ready' && uxEvaluations.length === 0" class="ux-evaluator-message">
-            No se encontraron observaciones de UX.
-          </p>
-          <ul v-else-if="uxEvaluationStatus === 'ready' && uxEvaluations.length" class="ux-evaluator-list">
-            <li
-              v-for="(observation, observationIndex) in uxEvaluations"
-              :key="`${observationIndex}-${observation}`"
-              class="ux-evaluator-item"
-            >
-              {{ observation }}
-            </li>
-          </ul>
-        </div>
-      </footer>
     </section>
 
     <section v-else class="canvas-wrap">
