@@ -184,8 +184,7 @@ const isSaving = ref(false);
 const lastGeneratedOutput = ref<GenerationPipelineResult | null>(null);
 const isHydratingSession = ref(false);
 const isScreenDirty = ref(false);
-const isDataEditorVisible = ref(false);
-const dataEditorJson = ref('{}');
+const dataEditorJson = ref('');
 const dataEditorError = ref('');
 const isApplyingData = ref(false);
 const isApplyingDataGeneration = ref(false);
@@ -194,7 +193,6 @@ const dataGenerationError = ref('');
 const dataGenerationHistory = ref<DataGenerationHistoryEntry[]>([]);
 const dataGenerationRedoStack = ref<string[]>([]);
 const dataGenerationConversation = ref<GenerationMessage[]>([]);
-const isPugEditorVisible = ref(false);
 const isApplyingPug = ref(false);
 const pugInstructionText = ref('');
 const pugEditorPug = ref('');
@@ -204,7 +202,6 @@ const pugGenerationError = ref('');
 const pugGenerationHistory = ref<PugGenerationHistoryEntry[]>([]);
 const pugGenerationRedoStack = ref<string[]>([]);
 const pugGenerationConversation = ref<GenerationMessage[]>([]);
-const isCssEditorVisible = ref(false);
 const cssEditorCss = ref('');
 const cssEditorError = ref('');
 const isApplyingCss = ref(false);
@@ -215,7 +212,7 @@ const cssGenerationHistory = ref<CssGenerationHistoryEntry[]>([]);
 const cssGenerationRedoStack = ref<string[]>([]);
 const cssGenerationConversation = ref<GenerationMessage[]>([]);
 type PrimaryNav = 'builder' | 'flows' | 'components' | 'library' | 'settings';
-type EditorWorkspaceTab = 'canvas' | 'data' | 'states';
+type EditorWorkspaceTab = 'canvas' | 'data' | 'pug' | 'css' | 'states';
 type FlowWorkspaceTab = 'canvas' | 'data' | 'states';
 
 const primaryNav = ref<PrimaryNav>('builder');
@@ -293,13 +290,6 @@ const activeScreenLabel = computed(() => {
 
 const browserLocale = computed(() => (typeof navigator !== 'undefined' ? navigator.language : '—'));
 
-const builderDataPreviewJson = computed(() => {
-  if (!lastGeneratedOutput.value) {
-    return '// Genera una pantalla para ver el JSON de datos.';
-  }
-  return formatScreenDataForEditor(lastGeneratedOutput.value.data);
-});
-
 const FLOW_COLUMNS = 3;
 const FLOW_COLUMN_GAP = 340;
 const FLOW_ROW_GAP = 300;
@@ -355,6 +345,22 @@ function cloneDataValue(value: unknown) {
     return {};
   }
 }
+
+watch(lastGeneratedOutput, (output) => {
+  dataEditorError.value = '';
+  dataGenerationError.value = '';
+  pugGenerationError.value = '';
+  cssGenerationError.value = '';
+  if (output) {
+    dataEditorJson.value = formatScreenDataForEditor(output.data);
+    pugEditorPug.value = output.sourcePug ?? '';
+    cssEditorCss.value = output.css ?? '';
+  } else {
+    dataEditorJson.value = '';
+    pugEditorPug.value = '';
+    cssEditorCss.value = '';
+  }
+}, { immediate: true });
 
 function clearDataGenerationHistory() {
   dataGenerationHistory.value = [];
@@ -1069,65 +1075,45 @@ function buildPugGenerationContext() {
   };
 }
 
-function openDataEditor() {
-  const output = lastGeneratedOutput.value;
-  if (!output) {
-    message.value = 'No hay una pantalla generada para editar.';
-    return;
-  }
-  dataEditorJson.value = formatScreenDataForEditor(output.data);
-  dataEditorError.value = '';
-  dataGenerationError.value = '';
-  isDataEditorVisible.value = true;
-}
-
-function openPugEditor() {
+function resetPugEditorDraft() {
+  pugEditorError.value = '';
   const output = lastGeneratedOutput.value;
   if (!output) {
     message.value = 'No hay una pantalla generada para editar el pug.';
+    pugEditorPug.value = '';
     return;
   }
   pugEditorPug.value = output.sourcePug ?? '';
-  pugEditorError.value = '';
-  pugGenerationError.value = '';
   if (pugGenerationConversation.value.length === 0) {
     pugGenerationConversation.value = toApiMessages(conversation.value);
   }
-  isPugEditorVisible.value = true;
+  return;
 }
 
-function openCssEditor() {
+function resetCssEditorDraft() {
+  cssEditorError.value = '';
   const output = lastGeneratedOutput.value;
   if (!output) {
     message.value = 'No hay una pantalla generada para editar el CSS.';
+    cssEditorCss.value = '';
     return;
   }
   cssEditorCss.value = output.css ?? '';
-  cssEditorError.value = '';
-  cssInstructionText.value = '';
-  cssGenerationError.value = '';
   if (cssGenerationConversation.value.length === 0) {
     cssGenerationConversation.value = toApiMessages(conversation.value);
   }
-  isCssEditorVisible.value = true;
+  return;
 }
 
-function closeDataEditor() {
-  isDataEditorVisible.value = false;
+function resetDataEditorDraft() {
   dataEditorError.value = '';
+  dataGenerationError.value = '';
+  const output = lastGeneratedOutput.value;
+  if (output) {
+    dataEditorJson.value = formatScreenDataForEditor(output.data);
+    return;
+  }
   dataEditorJson.value = '';
-}
-
-function closePugEditor() {
-  isPugEditorVisible.value = false;
-  pugEditorError.value = '';
-  pugEditorPug.value = '';
-}
-
-function closeCssEditor() {
-  isCssEditorVisible.value = false;
-  cssEditorError.value = '';
-  cssEditorCss.value = '';
 }
 
 async function applyDataToCurrentOutput(parsedData: unknown) {
@@ -1199,7 +1185,7 @@ async function applyCssToCurrentOutput(css: string) {
 }
 
 async function applyDataEditorChanges() {
-  if (!isDataEditorVisible.value || isApplyingData.value) {
+  if (isApplyingData.value) {
     return;
   }
   const output = lastGeneratedOutput.value;
@@ -1215,7 +1201,6 @@ async function applyDataEditorChanges() {
     const parsedData = JSON.parse(dataEditorJson.value);
     await applyDataToCurrentOutput(parsedData);
     clearDataGenerationHistory();
-    isDataEditorVisible.value = false;
     message.value = 'Data actualizada en el estado actual de la pantalla.';
   } catch (error) {
     if (error instanceof SyntaxError) {
@@ -1265,7 +1250,7 @@ async function applyPugToCurrentOutput(pugTemplate: string) {
 }
 
 async function applyPugEditorChanges() {
-  if (!isPugEditorVisible.value || isApplyingPug.value) {
+  if (isApplyingPug.value) {
     return;
   }
 
@@ -1281,7 +1266,6 @@ async function applyPugEditorChanges() {
   try {
     await applyPugToCurrentOutput(pugEditorPug.value);
     clearPugGenerationHistory();
-    isPugEditorVisible.value = false;
     message.value = 'Pug actualizado en el estado actual de la pantalla.';
     isScreenDirty.value = true;
   } catch (error) {
@@ -1293,7 +1277,7 @@ async function applyPugEditorChanges() {
 }
 
 async function applyCssEditorChanges() {
-  if (!isCssEditorVisible.value || isApplyingCss.value) {
+  if (isApplyingCss.value) {
     return;
   }
 
@@ -1320,7 +1304,6 @@ async function applyCssEditorChanges() {
         content: 'CSS actualizado correctamente.',
       },
     ]);
-    isCssEditorVisible.value = false;
     message.value = 'CSS actualizado en el estado actual de la pantalla.';
   } catch (error) {
     cssEditorError.value = error instanceof Error ? error.message : 'No se pudo aplicar el CSS.';
@@ -2241,7 +2224,6 @@ ${currentCss}`,
 
     cssGenerationError.value = '';
     message.value = 'CSS actualizado con IA y reaplicado en la pantalla actual.';
-    isCssEditorVisible.value = true;
   } catch (error) {
     cssGenerationError.value = error instanceof Error ? error.message : 'No se pudo actualizar el css con IA.';
     message.value = cssGenerationError.value;
@@ -2287,7 +2269,6 @@ async function rollbackCssGeneration() {
     cssEditorCss.value = entry.previousCss;
     syncConversationFromBackend(cssGenerationConversation.value);
     message.value = 'Se descartó el último cambio de CSS por IA.';
-    isCssEditorVisible.value = false;
   } catch (_error) {
     message.value = 'No se pudo deshacer el último cambio de CSS.';
   }
@@ -2356,7 +2337,6 @@ async function generatePugWithPrompt(prompt: string) {
 
     pugGenerationError.value = '';
     message.value = 'Pug actualizado con IA y reaplicado en la pantalla actual.';
-    isPugEditorVisible.value = false;
   } catch (error) {
     pugGenerationError.value = error instanceof Error ? error.message : 'No se pudo actualizar el pug con IA.';
     message.value = pugGenerationError.value;
@@ -2402,7 +2382,6 @@ async function rollbackPugGeneration() {
     pugEditorPug.value = entry.previousPug;
     syncConversationFromBackend(pugGenerationConversation.value);
     message.value = 'Se descartó el último cambio de pug por IA.';
-    isPugEditorVisible.value = false;
   } catch (_error) {
     message.value = 'No se pudo deshacer el último cambio de pug.';
   }
@@ -2793,6 +2772,26 @@ function onPromptKeydown(event: KeyboardEvent) {
               type="button"
               role="tab"
               class="workspace-tab"
+              :class="{ 'workspace-tab--active': editorWorkspaceTab === 'pug' }"
+              :aria-selected="editorWorkspaceTab === 'pug'"
+              @click="editorWorkspaceTab = 'pug'"
+            >
+              PUG
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class="workspace-tab"
+              :class="{ 'workspace-tab--active': editorWorkspaceTab === 'css' }"
+              :aria-selected="editorWorkspaceTab === 'css'"
+              @click="editorWorkspaceTab = 'css'"
+            >
+              CSS
+            </button>
+            <button
+              type="button"
+              role="tab"
+              class="workspace-tab"
               :class="{ 'workspace-tab--active': editorWorkspaceTab === 'states' }"
               :aria-selected="editorWorkspaceTab === 'states'"
               @click="editorWorkspaceTab = 'states'"
@@ -2800,10 +2799,9 @@ function onPromptKeydown(event: KeyboardEvent) {
               Estados
             </button>
           </div>
-        </div>
-        <div class="canvas-header-top canvas-header-top--tools">
           <div class="screen-toolbar">
             <label>
+              <i class="bi bi-collection" aria-hidden="true"></i>
               Pantallas
               <select
                 v-model="activeScreenId"
@@ -2817,7 +2815,8 @@ function onPromptKeydown(event: KeyboardEvent) {
               </select>
             </label>
             <button type="button" class="screen-action-btn" :disabled="isSessionLoading || isSaving" @click="onCreateScreenClick">
-              + Nueva
+              <i class="bi bi-plus-lg" aria-hidden="true"></i>
+              Nueva
             </button>
             <button
               type="button"
@@ -2825,6 +2824,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               :disabled="isSessionLoading || isSaving || !activeScreenId"
               @click="onDeleteScreenClick"
             >
+              <i class="bi bi-trash3" aria-hidden="true"></i>
               Eliminar
             </button>
             <button
@@ -2833,31 +2833,8 @@ function onPromptKeydown(event: KeyboardEvent) {
               :disabled="isSessionLoading || isSaving || !activeScreenId"
               @click="onSaveCurrentScreenClick"
             >
+              <i class="bi bi-save2" aria-hidden="true"></i>
               {{ isSaving ? 'Guardando...' : 'Guardar' }}
-            </button>
-            <button
-              type="button"
-              class="screen-action-btn"
-              :disabled="!generatedComponent || isGenerating || isApplyingData || isApplyingDataGeneration"
-              @click="openDataEditor"
-            >
-              Editar JSON
-            </button>
-            <button
-              type="button"
-              class="screen-action-btn"
-              :disabled="!generatedComponent || isGenerating || isApplyingPug || isApplyingPugGeneration"
-              @click="openPugEditor"
-            >
-              Editar PUG
-            </button>
-            <button
-              type="button"
-              class="screen-action-btn"
-              :disabled="!generatedComponent || isGenerating || isApplyingCss || isApplyingCssGeneration"
-              @click="openCssEditor"
-            >
-              Editar CSS
             </button>
           </div>
         </div>
@@ -2878,13 +2855,220 @@ function onPromptKeydown(event: KeyboardEvent) {
         </div>
       </article>
 
-      <article v-show="editorWorkspaceTab === 'data'" class="canvas-surface editor-tab-panel">
-        <div class="editor-data-toolbar">
-          <button type="button" class="screen-action-btn" :disabled="!generatedComponent" @click="openDataEditor">
-            Abrir editor JSON
-          </button>
+      <article v-show="editorWorkspaceTab === 'data'" class="canvas-surface editor-tab-panel editor-tab-panel--data">
+        <template v-if="!lastGeneratedOutput">
+          <p class="editor-data-empty">Genera o abre una pantalla para editar el JSON de datos y usar el asistente de IA.</p>
+        </template>
+        <div
+          v-else
+          class="data-editor-panel"
+          role="region"
+          aria-label="Editor de data JSON"
+        >
+          <header class="data-editor-header data-editor-header--embedded">
+            <h3>Data JSON</h3>
+          </header>
+          <label class="data-editor-input-label" for="dataInstructionInput">Instrucción para IA</label>
+          <textarea
+            id="dataInstructionInput"
+            v-model="dataInstructionText"
+            rows="3"
+            class="data-editor-instruction-textarea"
+            placeholder="Ej: Agrega 3 productos al arreglo de productos"
+            :disabled="isApplyingDataGeneration || isApplyingData"
+          ></textarea>
+          <div class="data-editor-inline-actions">
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isApplyingDataGeneration || isGenerating || !dataInstructionText.trim().length"
+              @click="onGenerateDataFromPrompt"
+            >
+              {{ isApplyingDataGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isApplyingDataGeneration || dataGenerationHistory.length === 0"
+              @click="rollbackDataGeneration"
+            >
+              Rollback
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isApplyingDataGeneration || (dataGenerationHistory.length === 0 && dataGenerationRedoStack.length === 0)"
+              @click="onRedoDataGeneration"
+            >
+              Re-do
+            </button>
+          </div>
+          <p v-if="dataGenerationError" class="data-editor-error">{{ dataGenerationError }}</p>
+          <textarea
+            v-model="dataEditorJson"
+            rows="14"
+            class="data-editor-textarea data-editor-textarea--embedded"
+            :disabled="isApplyingData"
+          ></textarea>
+          <p v-if="dataEditorError" class="data-editor-error">{{ dataEditorError }}</p>
+          <div class="data-editor-actions">
+            <button type="button" class="screen-action-btn" :disabled="isApplyingData" @click="resetDataEditorDraft">
+              Cancelar
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn data-editor-apply-btn"
+              :disabled="isApplyingData || !dataEditorJson.trim().length"
+              @click="applyDataEditorChanges"
+            >
+              {{ isApplyingData ? 'Aplicando...' : 'Aplicar cambios' }}
+            </button>
+          </div>
         </div>
-        <pre class="editor-data-preview">{{ builderDataPreviewJson }}</pre>
+      </article>
+
+      <article v-show="editorWorkspaceTab === 'pug'" class="canvas-surface editor-tab-panel">
+        <template v-if="!lastGeneratedOutput">
+          <p class="editor-data-empty">Genera o abre una pantalla para editar el PUG y usar el asistente de IA.</p>
+        </template>
+        <div
+          v-else
+          class="data-editor-panel"
+          role="region"
+          aria-label="Editor de PUG"
+        >
+          <header class="data-editor-header data-editor-header--embedded">
+            <h3>Editar PUG</h3>
+          </header>
+          <label class="data-editor-input-label" for="pugInstructionInput">Instrucción para IA</label>
+          <textarea
+            id="pugInstructionInput"
+            v-model="pugInstructionText"
+            rows="3"
+            class="data-editor-instruction-textarea"
+            placeholder="Ej: Sustituye el formulario actual por una tabla con paginación"
+            :disabled="isApplyingPugGeneration || isApplyingPug"
+          ></textarea>
+          <div class="data-editor-inline-actions">
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isApplyingPugGeneration || isGenerating || !pugInstructionText.trim().length"
+              @click="onGeneratePugFromPrompt"
+            >
+              {{ isApplyingPugGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isApplyingPugGeneration || pugGenerationHistory.length === 0"
+              @click="rollbackPugGeneration"
+            >
+              Rollback
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isApplyingPugGeneration || (pugGenerationHistory.length === 0 && pugGenerationRedoStack.length === 0)"
+              @click="onRedoPugGeneration"
+            >
+              Re-do
+            </button>
+          </div>
+          <p v-if="pugGenerationError" class="data-editor-error">{{ pugGenerationError }}</p>
+          <textarea
+            v-model="pugEditorPug"
+            rows="14"
+            class="data-editor-textarea data-editor-textarea--embedded"
+            :disabled="isApplyingPug"
+          ></textarea>
+          <p v-if="pugEditorError" class="data-editor-error">{{ pugEditorError }}</p>
+          <div class="data-editor-actions">
+            <button type="button" class="screen-action-btn" :disabled="isApplyingPug" @click="resetPugEditorDraft">
+              Cancelar
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn data-editor-apply-btn"
+              :disabled="isApplyingPug || !pugEditorPug.trim().length"
+              @click="applyPugEditorChanges"
+            >
+              {{ isApplyingPug ? 'Aplicando...' : 'Aplicar cambios' }}
+            </button>
+          </div>
+        </div>
+      </article>
+
+      <article v-show="editorWorkspaceTab === 'css'" class="canvas-surface editor-tab-panel">
+        <template v-if="!lastGeneratedOutput">
+          <p class="editor-data-empty">Genera o abre una pantalla para editar el CSS y usar el asistente de IA.</p>
+        </template>
+        <div
+          v-else
+          class="data-editor-panel"
+          role="region"
+          aria-label="Editor de CSS"
+        >
+          <header class="data-editor-header data-editor-header--embedded">
+            <h3>Editar CSS</h3>
+          </header>
+          <label class="data-editor-input-label" for="cssInstructionInput">Instrucción para IA</label>
+          <textarea
+            id="cssInstructionInput"
+            v-model="cssInstructionText"
+            rows="3"
+            class="data-editor-instruction-textarea"
+            placeholder="Ej: Cambia el fondo del contenedor principal y mejora la legibilidad de texto"
+            :disabled="isApplyingCssGeneration || isApplyingCss"
+          ></textarea>
+          <div class="data-editor-inline-actions">
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isApplyingCssGeneration || isGenerating || !cssInstructionText.trim().length"
+              @click="onGenerateCssFromPrompt"
+            >
+              {{ isApplyingCssGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isApplyingCssGeneration || cssGenerationHistory.length === 0"
+              @click="rollbackCssGeneration"
+            >
+              Rollback
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isApplyingCssGeneration || (cssGenerationHistory.length === 0 && cssGenerationRedoStack.length === 0)"
+              @click="onRedoCssGeneration"
+            >
+              Re-do
+            </button>
+          </div>
+          <p v-if="cssGenerationError" class="data-editor-error">{{ cssGenerationError }}</p>
+          <textarea
+            v-model="cssEditorCss"
+            rows="16"
+            class="data-editor-textarea data-editor-textarea--embedded"
+            :disabled="isApplyingCss"
+          ></textarea>
+          <p v-if="cssEditorError" class="data-editor-error">{{ cssEditorError }}</p>
+          <div class="data-editor-actions">
+            <button type="button" class="screen-action-btn" :disabled="isApplyingCss" @click="resetCssEditorDraft">
+              Cancelar
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn data-editor-apply-btn"
+              :disabled="isApplyingCss"
+              @click="applyCssEditorChanges"
+            >
+              {{ isApplyingCss ? 'Aplicando...' : 'Aplicar cambios' }}
+            </button>
+          </div>
+        </div>
       </article>
 
       <article v-show="editorWorkspaceTab === 'states'" class="canvas-surface editor-tab-panel">
@@ -3165,225 +3349,6 @@ function onPromptKeydown(event: KeyboardEvent) {
       </div>
     </footer>
 
-    <Teleport to="body">
-        <div v-if="isDataEditorVisible" class="data-editor-overlay" @click.self="closeDataEditor">
-          <div class="data-editor-modal" role="dialog" aria-modal="true" aria-label="Editor de data JSON">
-            <header class="data-editor-header">
-              <h3>Editar data JSON</h3>
-              <button
-                type="button"
-                class="data-editor-close"
-                :disabled="isApplyingData"
-                @click="closeDataEditor"
-              >
-                Cerrar
-              </button>
-            </header>
-            <label class="data-editor-input-label" for="dataInstructionInput">Instrucción para IA</label>
-            <textarea
-              id="dataInstructionInput"
-              v-model="dataInstructionText"
-              rows="3"
-              class="data-editor-instruction-textarea"
-              placeholder="Ej: Agrega 3 productos al arreglo de productos"
-              :disabled="isApplyingDataGeneration || isApplyingData"
-            ></textarea>
-            <div class="data-editor-inline-actions">
-              <button
-                type="button"
-                class="screen-action-btn"
-                :disabled="isApplyingDataGeneration || isGenerating || !dataInstructionText.trim().length"
-                @click="onGenerateDataFromPrompt"
-              >
-                {{ isApplyingDataGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
-              </button>
-              <button
-                type="button"
-                class="screen-action-btn"
-                :disabled="isApplyingDataGeneration || dataGenerationHistory.length === 0"
-                @click="rollbackDataGeneration"
-              >
-                Rollback
-              </button>
-              <button
-                type="button"
-                class="screen-action-btn"
-                :disabled="isApplyingDataGeneration || (dataGenerationHistory.length === 0 && dataGenerationRedoStack.length === 0)"
-                @click="onRedoDataGeneration"
-              >
-                Re-do
-              </button>
-            </div>
-            <p v-if="dataGenerationError" class="data-editor-error">{{ dataGenerationError }}</p>
-            <textarea
-              v-model="dataEditorJson"
-              rows="14"
-              class="data-editor-textarea"
-              :disabled="isApplyingData"
-            ></textarea>
-            <p v-if="dataEditorError" class="data-editor-error">{{ dataEditorError }}</p>
-            <div class="data-editor-actions">
-              <button type="button" class="screen-action-btn" :disabled="isApplyingData" @click="closeDataEditor">
-                Cancelar
-              </button>
-              <button
-                type="button"
-                class="screen-action-btn data-editor-apply-btn"
-                :disabled="isApplyingData || !dataEditorJson.trim().length"
-                @click="applyDataEditorChanges"
-              >
-                {{ isApplyingData ? 'Aplicando...' : 'Aplicar cambios' }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </Teleport>
-      <Teleport to="body">
-        <div v-if="isPugEditorVisible" class="data-editor-overlay" @click.self="closePugEditor">
-          <div class="data-editor-modal" role="dialog" aria-modal="true" aria-label="Editor de pug">
-            <header class="data-editor-header">
-              <h3>Editar PUG</h3>
-              <button
-                type="button"
-                class="data-editor-close"
-                :disabled="isApplyingPug"
-                @click="closePugEditor"
-              >
-                Cerrar
-              </button>
-            </header>
-            <label class="data-editor-input-label" for="pugInstructionInput">Instrucción para IA</label>
-            <textarea
-              id="pugInstructionInput"
-              v-model="pugInstructionText"
-              rows="3"
-              class="data-editor-instruction-textarea"
-              placeholder="Ej: Sustituye el formulario actual por una tabla con paginación"
-              :disabled="isApplyingPugGeneration || isApplyingPug"
-            ></textarea>
-            <div class="data-editor-inline-actions">
-              <button
-                type="button"
-                class="screen-action-btn"
-                :disabled="isApplyingPugGeneration || isGenerating || !pugInstructionText.trim().length"
-                @click="onGeneratePugFromPrompt"
-              >
-                {{ isApplyingPugGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
-              </button>
-              <button
-                type="button"
-                class="screen-action-btn"
-                :disabled="isApplyingPugGeneration || pugGenerationHistory.length === 0"
-                @click="rollbackPugGeneration"
-              >
-                Rollback
-              </button>
-              <button
-                type="button"
-                class="screen-action-btn"
-                :disabled="isApplyingPugGeneration || (pugGenerationHistory.length === 0 && pugGenerationRedoStack.length === 0)"
-                @click="onRedoPugGeneration"
-              >
-                Re-do
-              </button>
-            </div>
-            <p v-if="pugGenerationError" class="data-editor-error">{{ pugGenerationError }}</p>
-            <textarea
-              v-model="pugEditorPug"
-              rows="14"
-              class="data-editor-textarea"
-              :disabled="isApplyingPug"
-            ></textarea>
-            <p v-if="pugEditorError" class="data-editor-error">{{ pugEditorError }}</p>
-            <div class="data-editor-actions">
-              <button type="button" class="screen-action-btn" :disabled="isApplyingPug" @click="closePugEditor">
-                Cancelar
-              </button>
-              <button
-                type="button"
-                class="screen-action-btn data-editor-apply-btn"
-                :disabled="isApplyingPug || !pugEditorPug.trim().length"
-                @click="applyPugEditorChanges"
-              >
-                {{ isApplyingPug ? 'Aplicando...' : 'Aplicar cambios' }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </Teleport>
-      <Teleport to="body">
-        <div v-if="isCssEditorVisible" class="data-editor-overlay" @click.self="closeCssEditor">
-          <div class="data-editor-modal" role="dialog" aria-modal="true" aria-label="Editor de CSS">
-            <header class="data-editor-header">
-              <h3>Editar CSS</h3>
-              <button
-                type="button"
-                class="data-editor-close"
-                :disabled="isApplyingCss"
-                @click="closeCssEditor"
-              >
-                Cerrar
-              </button>
-            </header>
-            <label class="data-editor-input-label" for="cssInstructionInput">Instrucción para IA</label>
-            <textarea
-              id="cssInstructionInput"
-              v-model="cssInstructionText"
-              rows="3"
-              class="data-editor-instruction-textarea"
-              placeholder="Ej: Cambia el fondo del contenedor principal y mejora la legibilidad de texto"
-              :disabled="isApplyingCssGeneration || isApplyingCss"
-            ></textarea>
-            <div class="data-editor-inline-actions">
-              <button
-                type="button"
-                class="screen-action-btn"
-                :disabled="isApplyingCssGeneration || isGenerating || !cssInstructionText.trim().length"
-                @click="onGenerateCssFromPrompt"
-              >
-                {{ isApplyingCssGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
-              </button>
-              <button
-                type="button"
-                class="screen-action-btn"
-                :disabled="isApplyingCssGeneration || cssGenerationHistory.length === 0"
-                @click="rollbackCssGeneration"
-              >
-                Rollback
-              </button>
-              <button
-                type="button"
-                class="screen-action-btn"
-                :disabled="isApplyingCssGeneration || (cssGenerationHistory.length === 0 && cssGenerationRedoStack.length === 0)"
-                @click="onRedoCssGeneration"
-              >
-                Re-do
-              </button>
-            </div>
-            <p v-if="cssGenerationError" class="data-editor-error">{{ cssGenerationError }}</p>
-            <textarea
-              v-model="cssEditorCss"
-              rows="16"
-              class="data-editor-textarea"
-              :disabled="isApplyingCss"
-            ></textarea>
-            <p v-if="cssEditorError" class="data-editor-error">{{ cssEditorError }}</p>
-            <div class="data-editor-actions">
-              <button type="button" class="screen-action-btn" :disabled="isApplyingCss" @click="closeCssEditor">
-                Cancelar
-              </button>
-              <button
-                type="button"
-                class="screen-action-btn data-editor-apply-btn"
-                :disabled="isApplyingCss"
-                @click="applyCssEditorChanges"
-              >
-                {{ isApplyingCss ? 'Aplicando...' : 'Aplicar cambios' }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </Teleport>
   </main>
 </template>
 
@@ -3800,6 +3765,15 @@ function onPromptKeydown(event: KeyboardEvent) {
   padding-bottom: 0.65rem;
   border-bottom: 1px solid var(--rp-border);
   margin-bottom: 0.75rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.canvas-workspace-head .screen-toolbar {
+  margin-left: auto;
 }
 
 .workspace-tabs {
@@ -3844,10 +3818,39 @@ function onPromptKeydown(event: KeyboardEvent) {
   overflow: auto;
 }
 
-.editor-data-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
+.editor-tab-panel--data {
+  align-items: stretch;
+}
+
+.editor-data-empty {
+  margin: 0;
+  color: var(--rp-text-muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  max-width: 40rem;
+}
+
+.data-editor-panel {
+  width: 100%;
+  max-width: min(960px, 100%);
+  margin: 0 auto;
+  box-sizing: border-box;
+  background: var(--rp-bg-panel);
+  border: 1px solid var(--rp-border);
+  border-radius: 14px;
+  padding: 1rem;
+  display: grid;
+  gap: 0.75rem;
+  color: var(--rp-text);
+  box-shadow: var(--rp-shadow-md);
+}
+
+.data-editor-header--embedded {
+  justify-content: flex-start;
+}
+
+.data-editor-textarea--embedded {
+  min-height: min(360px, 45vh);
 }
 
 .editor-data-preview {
@@ -4077,6 +4080,17 @@ function onPromptKeydown(event: KeyboardEvent) {
   font-size: 0.875rem;
 }
 
+.screen-toolbar > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.screen-toolbar .screen-action-btn i {
+  margin-right: 0.25rem;
+  font-size: 0.92rem;
+}
+
 .screen-select {
   margin-left: 0.45rem;
   min-width: 170px;
@@ -4186,7 +4200,7 @@ function onPromptKeydown(event: KeyboardEvent) {
   border: none;
   border-radius: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
   color: var(--bs-body-color);
   position: relative;
   flex: 1 1 auto;
