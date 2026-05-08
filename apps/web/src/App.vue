@@ -2598,34 +2598,74 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 <style scoped>
 .builder-root {
+  --rp-primary: #1a66ff;
+  --rp-primary-hover: #1454d9;
+  --rp-primary-soft: rgba(26, 102, 255, 0.12);
+  --rp-bg-app: #f8f9fb;
+  --rp-bg-panel: #ffffff;
+  --rp-bg-canvas: var(--bs-body-bg, #f8f9fb);
+  --rp-bg-subtle: #f3f4f6;
+  --rp-text: #111827;
+  --rp-text-muted: #6b7280;
+  --rp-border: #e5e7eb;
+  --rp-shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+  --rp-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.08);
+  --rp-success-bg: #f0fdf4;
+  --rp-success-border: #bbf7d0;
+  --rp-success-text: #16a34a;
+
   min-height: 100vh;
   margin: 0;
-  padding: 0;
-  background: radial-gradient(circle at 16% 20%, #2a1b6b 0%, transparent 42%),
-    radial-gradient(circle at 84% 10%, #1a7bf7 0%, transparent 38%), #0d1020;
-  color: #f5f6ff;
+  padding: 1.25rem;
+  background: var(--rp-bg-app);
+  color: var(--rp-text);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    Arial,
+    sans-serif;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   position: relative;
-  overflow: hidden;
+  overflow-x: hidden;
+}
+
+.builder-root *,
+.builder-root *::before,
+.builder-root *::after {
+  box-sizing: border-box;
 }
 
 .canvas-wrap {
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 18px;
+  border: 1px solid var(--rp-border);
+  border-radius: 16px;
   padding: 0;
-  background: rgba(16, 19, 36, 0.9);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
-  min-height: 100vh;
+  background: var(--rp-bg-panel);
+  box-shadow: var(--rp-shadow-sm);
+  min-height: calc(100vh - 2.5rem);
   display: flex;
   flex-direction: column;
   width: 100%;
-  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.canvas-header {
+  padding: 1.25rem 1.5rem 1rem;
+  border-bottom: 1px solid var(--rp-border);
+  background: var(--rp-bg-panel);
 }
 
 .canvas-header h1 {
   margin: 0;
   font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--rp-text);
+  letter-spacing: -0.02em;
 }
 
 .canvas-header-top {
@@ -2641,32 +2681,34 @@ function onPromptKeydown(event: KeyboardEvent) {
   gap: 0.55rem;
   align-items: center;
   flex-wrap: wrap;
-  color: #e4e9ff;
+  color: var(--rp-text-muted);
+  font-size: 0.875rem;
 }
 
 .screen-select {
   margin-left: 0.45rem;
   min-width: 170px;
-  border: 1px solid rgba(255, 255, 255, 0.24);
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
-  background: #0e152f;
-  color: #f4f7ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   padding: 0.38rem 0.56rem;
 }
 
 .screen-action-btn {
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
   min-width: 86px;
-  background: #0e152f;
-  color: #f4f7ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   height: 2rem;
   padding: 0.38rem 0.6rem;
   cursor: pointer;
+  font-weight: 500;
 }
 
 .screen-action-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--rp-bg-subtle);
 }
 
 .screen-action-btn:disabled {
@@ -2678,17 +2720,17 @@ function onPromptKeydown(event: KeyboardEvent) {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  color: #e4e9ff;
+  color: var(--rp-text-muted);
   font-size: 0.82rem;
   white-space: nowrap;
 }
 
 .theme-select {
   min-width: 156px;
-  border: 1px solid rgba(255, 255, 255, 0.24);
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
-  background: #0e152f;
-  color: #f4f7ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   padding: 0.38rem 0.56rem;
 }
 
@@ -2699,12 +2741,12 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .theme-switch-btn {
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
   width: 2rem;
   height: 2rem;
-  background: #0e152f;
-  color: #f4f7ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   cursor: pointer;
   display: inline-grid;
   place-items: center;
@@ -2713,19 +2755,20 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .theme-switch-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--rp-bg-subtle);
 }
 
 .theme-current {
   min-width: 10rem;
   display: inline-grid;
   place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
-  background: #0e152f;
-  color: #f4f7ff;
+  background: var(--rp-bg-subtle);
+  color: var(--rp-text);
   padding: 0.38rem 0.6rem;
   font-size: 0.86rem;
+  font-weight: 500;
 }
 
 .theme-switch-btn:disabled {
@@ -2735,19 +2778,20 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .theme-hint {
   display: block;
-  color: #aeb8db;
+  color: var(--rp-text-muted);
   font-size: 0.75rem;
   margin-top: 0.2rem;
 }
 
 .canvas-header p {
   margin: 0.4rem 0 0.9rem;
-  color: #c8d0ff;
+  color: var(--rp-text-muted);
+  line-height: 1.5;
 }
 
 .canvas-surface {
-  background: var(--bs-body-bg);
-  border: 1px dashed rgba(255, 255, 255, 0.2);
+  background: var(--rp-bg-canvas);
+  border: none;
   border-radius: 0;
   min-height: 0;
   overflow: hidden;
@@ -2765,6 +2809,7 @@ function onPromptKeydown(event: KeyboardEvent) {
   min-height: 0;
   flex: 1;
   border-radius: 0;
+  background: var(--rp-bg-canvas);
 }
 
 .flow-toolbar {
@@ -2772,11 +2817,13 @@ function onPromptKeydown(event: KeyboardEvent) {
   justify-content: space-between;
   align-items: center;
   gap: 0.75rem;
+  padding: 0 0.25rem;
 }
 
 .flow-toolbar h2 {
   margin: 0;
   font-size: 1.02rem;
+  color: var(--rp-text);
 }
 
 .flow-toolbar-actions {
@@ -2786,15 +2833,17 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .flow-toolbar-btn-soft {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--rp-bg-subtle);
 }
 
 .flow-canvas {
   position: relative;
   overflow: auto;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 0;
-  background: rgba(8, 11, 28, 0.82);
+  border: 1px solid var(--rp-border);
+  border-radius: 12px;
+  background-color: var(--rp-bg-canvas);
+  background-image: radial-gradient(circle, #d1d5db 1px, transparent 1px);
+  background-size: 20px 20px;
   min-height: 0;
   flex: 1;
 }
@@ -2817,15 +2866,15 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .flow-canvas-instance :deep(.vue-flow__edge path) {
-  stroke: #9bc0ff;
+  stroke: var(--rp-primary);
   stroke-width: 2;
 }
 
 .flow-handle {
   width: 10px;
   height: 10px;
-  background: #8ec5ff;
-  border: 1px solid #1f3566;
+  background: var(--rp-primary);
+  border: 2px solid var(--rp-bg-panel);
   border-radius: 999px;
 }
 
@@ -2834,14 +2883,14 @@ function onPromptKeydown(event: KeyboardEvent) {
   width: 100%;
   min-width: 280px;
   min-height: 260px;
-  background: rgba(17, 23, 52, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: var(--rp-bg-panel);
+  border: 1px solid var(--rp-border);
   border-radius: 12px;
   display: grid;
   gap: 0.55rem;
   padding: 0.6rem;
-  color: #f4f7ff;
-  box-shadow: 0 10px 25px rgba(2, 10, 26, 0.34);
+  color: var(--rp-text);
+  box-shadow: var(--rp-shadow-sm);
 }
 
 .flow-task-header {
@@ -2852,10 +2901,10 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .flow-task-title {
   flex: 1;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
-  background: #0d132f;
-  color: #f4f7ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   padding: 0.35rem 0.55rem;
 }
 
@@ -2867,21 +2916,21 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .flow-task-screen-label {
   font-size: 0.8rem;
-  color: #c7d5ef;
+  color: var(--rp-text-muted);
 }
 
 .flow-task-screen-select {
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
-  background: #0d132f;
-  color: #f4f7ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   padding: 0.35rem 0.55rem;
 }
 
 .flow-task-preview {
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
-  background: #0a1024;
+  background: var(--rp-bg-canvas);
   width: 300px;
   height: 200px;
   overflow: hidden;
@@ -2900,14 +2949,14 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .flow-preview-placeholder {
   margin: 0;
-  color: #9ca9ca;
+  color: var(--rp-text-muted);
   font-size: 0.78rem;
   padding: 0.45rem;
 }
 
 .flow-preview-error {
   margin: 0;
-  color: #ff8f8f;
+  color: #dc2626;
   font-size: 0.76rem;
   padding: 0.45rem;
 }
@@ -2924,7 +2973,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .flow-status {
   margin: 0;
-  color: #a9b6d4;
+  color: var(--rp-text-muted);
   font-size: 0.82rem;
 }
 
@@ -2935,6 +2984,7 @@ function onPromptKeydown(event: KeyboardEvent) {
   font-size: 1.05rem;
   text-align: center;
   padding: 1rem;
+  color: var(--rp-text-muted);
 }
 
 .canvas-content {
@@ -2946,7 +2996,7 @@ function onPromptKeydown(event: KeyboardEvent) {
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(253, 254, 255, 0.7);
+  background: rgba(248, 249, 251, 0.75);
   backdrop-filter: blur(2px);
   pointer-events: none;
 }
@@ -2957,17 +3007,19 @@ function onPromptKeydown(event: KeyboardEvent) {
   gap: 0.45rem;
   padding: 0.45rem 0.8rem;
   border-radius: 999px;
-  background: #141a33;
-  color: #edf1ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   font-size: 0.9rem;
-  box-shadow: 0 8px 20px rgba(18, 21, 40, 0.2);
+  font-weight: 500;
+  border: 1px solid var(--rp-border);
+  box-shadow: var(--rp-shadow-sm);
 }
 
 .canvas-status-dot {
   width: 0.6rem;
   height: 0.6rem;
   border-radius: 999px;
-  background: #4fc3f7;
+  background: var(--rp-primary);
   animation: canvas-pulse 1.1s infinite;
 }
 
@@ -3026,8 +3078,11 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .canvas-meta {
-  margin-top: 0.8rem;
-  color: #bac0dd;
+  margin-top: 0;
+  padding: 1rem 1.5rem 1.25rem;
+  border-top: 1px solid var(--rp-border);
+  background: var(--rp-bg-panel);
+  color: var(--rp-text-muted);
   font-size: 0.9rem;
 }
 
@@ -3035,10 +3090,14 @@ function onPromptKeydown(event: KeyboardEvent) {
   margin: 0.2rem 0;
 }
 
+.canvas-meta strong {
+  color: var(--rp-text);
+}
+
 .ux-evaluator {
   margin-top: 0.5rem;
   padding-top: 0.45rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  border-top: 1px solid var(--rp-border);
 }
 
 .ux-evaluator-title {
@@ -3047,20 +3106,22 @@ function onPromptKeydown(event: KeyboardEvent) {
   gap: 0.5rem;
   align-items: center;
   flex-wrap: wrap;
+  color: var(--rp-text);
 }
 
 .ux-evaluator-status {
-  color: #9fd7ff;
+  color: var(--rp-primary);
   font-size: 0.8rem;
+  font-weight: 500;
 }
 
 .ux-evaluator-status-error {
-  color: #ffb4b4;
+  color: #dc2626;
 }
 
 .ux-evaluator-message {
   margin: 0.3rem 0 0;
-  color: #95a2c4;
+  color: var(--rp-text-muted);
 }
 
 .ux-recommendation-bubbles {
@@ -3087,38 +3148,38 @@ function onPromptKeydown(event: KeyboardEvent) {
   display: inline-flex;
   appearance: none;
   border: 0;
-  color: var(--bs-light);
+  color: #ffffff;
   cursor: pointer;
   align-items: center;
   justify-content: center;
   text-align: center;
   border: 1px solid transparent;
-  background: rgba(var(--bs-body-color-rgb, 248, 249, 250), 0.22);
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.16);
+  background: rgba(107, 114, 128, 0.25);
+  box-shadow: var(--rp-shadow-sm);
   transition: transform 140ms ease, opacity 140ms ease, box-shadow 140ms ease;
   margin-top: 0.12rem;
 }
 
 .ux-recommendation-bubble:hover:not(:disabled) {
   transform: translateY(-1px) scale(1.08);
-  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--rp-shadow-md);
 }
 
 .ux-recommendation-bubble:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline: 2px solid var(--rp-primary);
   outline-offset: 2px;
 }
 
 .ux-recommendation-bubble--high {
-  border-color: rgba(var(--bs-danger-rgb), 0.8);
-  background: color-mix(in srgb, rgba(var(--bs-danger-rgb), 0.42) 52%, transparent);
-  color: var(--bs-light);
+  border-color: rgba(var(--bs-danger-rgb), 0.65);
+  background: color-mix(in srgb, rgba(var(--bs-danger-rgb), 0.85) 40%, var(--rp-bg-panel));
+  color: #ffffff;
 }
 
 .ux-recommendation-bubble--medium {
   border-color: rgba(var(--bs-warning-rgb), 0.8);
-  background: color-mix(in srgb, rgba(var(--bs-warning-rgb), 0.42) 52%, transparent);
-  color: var(--bs-dark);
+  background: color-mix(in srgb, rgba(var(--bs-warning-rgb), 0.55) 45%, var(--rp-bg-panel));
+  color: var(--rp-text);
 }
 
 .ux-recommendation-bubble-letter {
@@ -3155,11 +3216,11 @@ function onPromptKeydown(event: KeyboardEvent) {
   }
   20% {
     transform: scale(1.07);
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.45);
+    box-shadow: 0 0 0 0 rgba(26, 102, 255, 0.35);
   }
   60% {
     transform: scale(1.15);
-    box-shadow: 0 0 0 10px rgba(255, 255, 255, 0);
+    box-shadow: 0 0 0 10px rgba(26, 102, 255, 0);
   }
   100% {
     transform: scale(0.92);
@@ -3172,6 +3233,7 @@ function onPromptKeydown(event: KeyboardEvent) {
   padding-left: 1.2rem;
   display: grid;
   gap: 0.55rem;
+  color: var(--rp-text-muted);
 }
 
 .ux-evaluator-item {
@@ -3182,7 +3244,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 .ux-evaluator-severity {
   justify-self: start;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border: 1px solid var(--rp-border);
   font-size: 0.72rem;
   padding: 0.12rem 0.45rem;
   text-transform: uppercase;
@@ -3191,32 +3253,32 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .ux-evaluator-severity.severity-high {
-  color: #ffb3b3;
-  background: rgba(255, 95, 95, 0.15);
-  border-color: rgba(255, 95, 95, 0.52);
+  color: #b91c1c;
+  background: #fef2f2;
+  border-color: #fecaca;
 }
 
 .ux-evaluator-severity.severity-medium {
-  color: #ffd17a;
-  background: rgba(255, 187, 82, 0.16);
-  border-color: rgba(255, 187, 82, 0.5);
+  color: #b45309;
+  background: #fffbeb;
+  border-color: #fde68a;
 }
 
 .ux-evaluator-severity.severity-low {
-  color: #9ad5ff;
-  background: rgba(74, 161, 255, 0.16);
-  border-color: rgba(74, 161, 255, 0.5);
+  color: var(--rp-primary);
+  background: var(--rp-primary-soft);
+  border-color: rgba(26, 102, 255, 0.25);
 }
 
 .ux-evaluator-issue {
   margin: 0;
-  color: #e2e8ff;
+  color: var(--rp-text);
   font-weight: 700;
 }
 
 .ux-evaluator-recommendation {
   margin: 0;
-  color: #adc2eb;
+  color: var(--rp-text-muted);
 }
 
 .floating-prompt {
@@ -3225,17 +3287,18 @@ function onPromptKeydown(event: KeyboardEvent) {
   right: 1.4rem;
   bottom: 1.4rem;
   width: min(420px, calc(100vw - 2.8rem));
-  background: #11162b;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: var(--rp-bg-panel);
+  border: 1px solid var(--rp-border);
   border-radius: 14px;
-  padding: 0.9rem;
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(6px);
+  padding: 1rem;
+  box-shadow: var(--rp-shadow-md);
 }
 
 .floating-prompt h2 {
   margin: 0;
   font-size: 1rem;
+  font-weight: 600;
+  color: var(--rp-text);
 }
 
 .conversation-list {
@@ -3245,10 +3308,10 @@ function onPromptKeydown(event: KeyboardEvent) {
   gap: 0.5rem;
   max-height: 240px;
   overflow: auto;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--rp-border);
   border-radius: 10px;
   padding: 0.55rem;
-  background: rgba(11, 15, 30, 0.75);
+  background: var(--rp-bg-canvas);
 }
 
 .floating-prompt-title {
@@ -3276,7 +3339,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .conversation-empty {
-  color: #98a4c7;
+  color: var(--rp-text-muted);
   font-size: 0.85rem;
 }
 
@@ -3288,11 +3351,11 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .conversation-row.user {
-  color: #f6f8ff;
+  color: var(--rp-text);
 }
 
 .conversation-row.assistant {
-  color: #f6d14f;
+  color: var(--rp-primary);
 }
 
 .conversation-content {
@@ -3310,14 +3373,18 @@ function onPromptKeydown(event: KeyboardEvent) {
 .prompt-action-btn {
   border: 0;
   border-radius: 10px;
-  background: #3a82ff;
+  background: var(--rp-primary);
   color: #fff;
   cursor: pointer;
-  font-weight: 700;
+  font-weight: 600;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
+}
+
+.prompt-action-btn:hover:not(:disabled) {
+  background: var(--rp-primary-hover);
 }
 
 .prompt-action-btn:disabled {
@@ -3333,47 +3400,52 @@ function onPromptKeydown(event: KeyboardEvent) {
   margin-top: 0.65rem;
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: 1px solid var(--rp-border);
   border-radius: 10px;
-  background: #0d142e;
-  color: #f5f6ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   padding: 0.6rem;
   min-height: 130px;
   resize: vertical;
 }
 
+.floating-prompt textarea::placeholder {
+  color: #9ca3af;
+}
+
 .floating-prompt button {
   margin-top: 0.6rem;
   border: 0;
-  border-radius: 10px;
-  background: #3a82ff;
+  border-radius: 8px;
+  background: var(--rp-primary);
   color: #fff;
   padding: 0.58rem;
   cursor: pointer;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .floating-prompt button:hover:not(:disabled) {
-  background: #5c9bff;
+  background: var(--rp-primary-hover);
 }
 
 .floating-prompt .conversation-toggle-btn {
   width: auto;
   margin-top: 0;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid var(--rp-border);
   border-radius: 999px;
-  background: transparent;
-  color: #dfe7ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text-muted);
 }
 
 .floating-prompt .conversation-toggle-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--rp-bg-subtle);
+  color: var(--rp-text);
 }
 
 .data-editor-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(10, 14, 28, 0.76);
+  background: rgba(17, 24, 39, 0.45);
   z-index: 1100;
   display: grid;
   place-items: center;
@@ -3383,13 +3455,14 @@ function onPromptKeydown(event: KeyboardEvent) {
 .data-editor-modal {
   width: min(760px, calc(100vw - 2.5rem));
   max-height: calc(100vh - 2.5rem);
-  background: #11162b;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 12px;
-  padding: 0.9rem;
+  background: var(--rp-bg-panel);
+  border: 1px solid var(--rp-border);
+  border-radius: 14px;
+  padding: 1rem;
   display: grid;
   gap: 0.75rem;
-  color: #f5f8ff;
+  color: var(--rp-text);
+  box-shadow: var(--rp-shadow-md);
 }
 
 .data-editor-header {
@@ -3399,13 +3472,24 @@ function onPromptKeydown(event: KeyboardEvent) {
   gap: 0.75rem;
 }
 
+.data-editor-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
 .data-editor-close {
-  border: 0;
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
-  background: #0e152f;
-  color: #f4f7ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   padding: 0.35rem 0.7rem;
   cursor: pointer;
+  font-weight: 500;
+}
+
+.data-editor-close:hover:not(:disabled) {
+  background: var(--rp-bg-subtle);
 }
 
 .data-editor-close:disabled {
@@ -3418,10 +3502,10 @@ function onPromptKeydown(event: KeyboardEvent) {
   width: 100%;
   min-height: 260px;
   resize: vertical;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: 1px solid var(--rp-border);
   border-radius: 10px;
-  background: #0d142e;
-  color: #f5f6ff;
+  background: var(--rp-bg-canvas);
+  color: var(--rp-text);
   padding: 0.65rem;
   font-family: 'Fira Code', Menlo, Monaco, Consolas, 'Courier New', monospace;
   font-size: 0.8rem;
@@ -3431,8 +3515,9 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .data-editor-input-label {
   margin-bottom: -0.4rem;
-  color: #d5ddff;
+  color: var(--rp-text-muted);
   font-size: 0.9rem;
+  font-weight: 500;
 }
 
 .data-editor-instruction-textarea {
@@ -3440,12 +3525,12 @@ function onPromptKeydown(event: KeyboardEvent) {
   margin: 0;
   min-height: 72px;
   resize: vertical;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: 1px solid var(--rp-border);
   border-radius: 10px;
-  background: #0d142e;
-  color: #f5f6ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   padding: 0.65rem;
-  font-family: 'Inter', sans-serif;
+  font-family: inherit;
   font-size: 0.9rem;
   line-height: 1.35;
   box-sizing: border-box;
@@ -3465,7 +3550,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .data-editor-error {
   margin: 0;
-  color: #ff6f6f;
+  color: #dc2626;
   font-size: 0.9rem;
 }
 
@@ -3482,11 +3567,14 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .data-editor-apply-btn {
-  background: #5f9dff;
+  background: var(--rp-primary);
+  border-color: var(--rp-primary);
+  color: #fff;
 }
 
 .data-editor-apply-btn:hover:not(:disabled) {
-  background: #7ab0ff;
+  background: var(--rp-primary-hover);
+  border-color: var(--rp-primary-hover);
 }
 
 .prompt-actions {
@@ -3532,14 +3620,14 @@ function onPromptKeydown(event: KeyboardEvent) {
 .prompt-msg {
   margin: 0.65rem 0 0;
   font-size: 0.87rem;
-  color: #a9b5d3;
+  color: var(--rp-text-muted);
 }
 
 .pipeline-missing {
-  border: 1px dashed #fdc100;
+  border: 1px dashed #ca8a04;
   border-radius: 10px;
-  background: linear-gradient(160deg, #fff8dd, #fef3c2);
-  color: #6b4f00;
+  background: linear-gradient(160deg, #fffbeb, #fef3c7);
+  color: #713f12;
   padding: 0.75rem;
 }
 
