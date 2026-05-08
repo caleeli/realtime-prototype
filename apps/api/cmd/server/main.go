@@ -150,6 +150,40 @@ func main() {
 		}
 
 		switch {
+		case subPath == "flow-diagram":
+			if r.Method != http.MethodGet && r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+
+			if r.Method == http.MethodGet {
+				diagram, _, err := sessionStore.loadFlowDiagram(r.Context(), project.ID)
+				if err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusOK, diagram)
+				return
+			}
+
+			var payload taskFlowDiagram
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+				return
+			}
+			payload, err = sanitizeFlowDiagram(payload)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			savedDiagram, err := sessionStore.saveFlowDiagram(r.Context(), project.ID, payload)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusCreated, savedDiagram)
+			return
+
 		case subPath == "theme":
 			if r.Method != http.MethodPatch {
 				w.WriteHeader(http.StatusMethodNotAllowed)
@@ -508,6 +542,105 @@ func main() {
 	log.Printf("inspiration service listening on %s", addr)
 	if err := http.ListenAndServe(addr, muxWithCORS(mux)); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func sanitizeFlowDiagram(diagram taskFlowDiagram) (taskFlowDiagram, error) {
+	if diagram.Tasks == nil {
+		diagram.Tasks = []flowDiagramTask{}
+	}
+	if diagram.Edges == nil {
+		diagram.Edges = []flowDiagramConnection{}
+	}
+
+	taskIDs := map[string]struct{}{}
+	normalizedTasks := make([]flowDiagramTask, 0, len(diagram.Tasks))
+
+	for index, task := range diagram.Tasks {
+		task.ID = strings.TrimSpace(task.ID)
+		if task.ID == "" {
+			task.ID = newSessionID()
+		}
+		if _, exists := taskIDs[task.ID]; exists {
+			return taskFlowDiagram{}, fmt.Errorf("duplicate task id: %q", task.ID)
+		}
+		taskIDs[task.ID] = struct{}{}
+
+		task.Name = strings.TrimSpace(task.Name)
+		if task.Name == "" {
+			task.Name = fmt.Sprintf("Tarea %d", index+1)
+		}
+		task.ScreenID = strings.TrimSpace(task.ScreenID)
+		task.Position = sanitizeFlowTaskPosition(task.Position)
+
+		normalizedTasks = append(normalizedTasks, task)
+	}
+
+	if len(diagram.Edges) == 0 {
+		return taskFlowDiagram{
+			Tasks: normalizedTasks,
+			Edges: []flowDiagramConnection{},
+		}, nil
+	}
+
+	normalizedEdges := make([]flowDiagramConnection, 0, len(diagram.Edges))
+	for index, edge := range diagram.Edges {
+		edge.Source = strings.TrimSpace(edge.Source)
+		edge.Target = strings.TrimSpace(edge.Target)
+		if edge.Source == "" || edge.Target == "" {
+			return taskFlowDiagram{}, fmt.Errorf("edge at index %d must include source and target", index)
+		}
+		if _, sourceKnown := taskIDs[edge.Source]; !sourceKnown {
+			return taskFlowDiagram{}, fmt.Errorf("edge source not found: %q", edge.Source)
+		}
+		if _, targetKnown := taskIDs[edge.Target]; !targetKnown {
+			return taskFlowDiagram{}, fmt.Errorf("edge target not found: %q", edge.Target)
+		}
+
+		edge.ID = strings.TrimSpace(edge.ID)
+		if edge.ID == "" {
+			edge.ID = fmt.Sprintf("edge-%s-%s-%d", edge.Source, edge.Target, index+1)
+		}
+		if edge.SourceHandle != nil {
+			sourceHandle := strings.TrimSpace(*edge.SourceHandle)
+			if sourceHandle != "" && !isValidFlowAnchor(sourceHandle) {
+				return taskFlowDiagram{}, fmt.Errorf("invalid source anchor: %q", sourceHandle)
+			}
+			edge.SourceHandle = &sourceHandle
+		}
+		if edge.TargetHandle != nil {
+			targetHandle := strings.TrimSpace(*edge.TargetHandle)
+			if targetHandle != "" && !isValidFlowAnchor(targetHandle) {
+				return taskFlowDiagram{}, fmt.Errorf("invalid target anchor: %q", targetHandle)
+			}
+			edge.TargetHandle = &targetHandle
+		}
+
+		normalizedEdges = append(normalizedEdges, edge)
+	}
+
+	return taskFlowDiagram{
+		Tasks: normalizedTasks,
+		Edges: normalizedEdges,
+	}, nil
+}
+
+func sanitizeFlowTaskPosition(position flowTaskPosition) flowTaskPosition {
+	if position.X == 0 && position.Y == 0 {
+		return flowTaskPosition{
+			X: 40,
+			Y: 40,
+		}
+	}
+	return position
+}
+
+func isValidFlowAnchor(handle string) bool {
+	switch handle {
+	case "anchor-top-1", "anchor-top-2", "anchor-bottom-1", "anchor-bottom-2", "anchor-left-1", "anchor-left-2", "anchor-right-1", "anchor-right-2":
+		return true
+	default:
+		return false
 	}
 }
 

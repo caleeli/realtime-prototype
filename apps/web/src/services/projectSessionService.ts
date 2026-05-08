@@ -13,6 +13,37 @@ type ScreenPayload = {
   metadata?: Record<string, unknown>;
 };
 
+export type FlowTaskPosition = {
+  x: number;
+  y: number;
+};
+
+export type FlowTaskNode = {
+  id: string;
+  name: string;
+  screenId: string;
+  position: FlowTaskPosition;
+};
+
+export type FlowDiagramConnection = {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+};
+
+export type TaskFlowDiagram = {
+  tasks: FlowTaskNode[];
+  edges: FlowDiagramConnection[];
+};
+
+export type FlowDiagramRecord = {
+  projectId: string;
+  diagram: TaskFlowDiagram;
+  updatedAt: string;
+};
+
 type SaveScreenStateRequest = {
   conversation: SessionChatMessage[];
   recommendations: string[];
@@ -74,6 +105,7 @@ export type CreateScreenResult = {
 const DEFAULT_BASE_URL = '/api';
 const SESSION_ENDPOINT = '/session';
 const SESSION_SCREENS_ENDPOINT = `${SESSION_ENDPOINT}/screens`;
+const SESSION_FLOW_DIAGRAM_ENDPOINT = `${SESSION_ENDPOINT}/flow-diagram`;
 
 function buildHeaders(): Record<string, string> {
   return {
@@ -191,5 +223,22 @@ export class ProjectSessionService {
       },
     );
     return parseResponse<SessionScreenState>(response);
+  }
+
+  async loadFlowDiagram(): Promise<FlowDiagramRecord> {
+    const response = await fetch(`${this.baseUrl}${SESSION_FLOW_DIAGRAM_ENDPOINT}`, {
+      headers: buildHeaders(),
+      method: 'GET',
+    });
+    return parseResponse<FlowDiagramRecord>(response);
+  }
+
+  async saveFlowDiagram(payload: TaskFlowDiagram): Promise<FlowDiagramRecord> {
+    const response = await fetch(`${this.baseUrl}${SESSION_FLOW_DIAGRAM_ENDPOINT}`, {
+      method: 'POST',
+      headers: buildHeaders(),
+      body: JSON.stringify(payload),
+    });
+    return parseResponse<FlowDiagramRecord>(response);
   }
 }

@@ -34,6 +34,7 @@ import {
   ProjectSessionService,
   type SessionScreenSummary,
   type SessionScreenState,
+  type TaskFlowDiagram,
 } from './services/projectSessionService';
 
 const pipelineService = new GenerationPipelineService({
@@ -215,6 +216,9 @@ const flowEdges = ref<FlowEdge[]>([]);
 const selectedFlowEdgeId = ref('');
 const flowTaskPreviews = ref<Record<string, FlowTaskPreviewState>>({});
 const flowNodes = ref<FlowNode[]>([]);
+const isFlowDiagramHydrating = ref(false);
+const isFlowDiagramHydrated = ref(false);
+const flowDiagramSaveTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const explodingBubbleId = ref<string | null>(null);
 const uxEvaluationStatus = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
 const uxEvaluationMessage = ref('');
@@ -222,6 +226,7 @@ const cleanupStyle = ref<(() => void) | null>(null);
 const screenRevision = ref(0);
 const BOOTSWATCH_VERSION = '5.3.8';
 const BOOTSWATCH_LINK_ID = 'bootswatch-theme-runtime';
+const FLOW_DIAGRAM_AUTO_SAVE_MS = 500;
 
 const themeOptions: { value: string; label: string }[] = [
   { value: 'bootstrap', label: 'Bootstrap (default)' },
@@ -347,6 +352,232 @@ function buildFlowNodePosition(index: number) {
     x: col * FLOW_COLUMN_GAP + 24,
     y: row * FLOW_ROW_GAP + 24,
   };
+}
+
+function sanitizeFlowDiagramHandle(handle: string | null | undefined): string | null {
+  const trimmed = (handle ?? '').trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function normalizeTaskPosition(taskId: string, index: number, fallbackNodes: Map<string, { x: number; y: number }>): { x: number; y: number } {
+  const fallback = fallbackNodes.get(taskId);
+  if (fallback) {
+    return fallback;
+  }
+  return buildFlowNodePosition(index);
+}
+
+function buildTaskFlowDiagramFromState(): TaskFlowDiagram {
+  const nodeLookup = new Map<string, FlowNode>();
+  for (const node of flowNodes.value) {
+    nodeLookup.set(node.id, node);
+  }
+
+  const positionsLookup = new Map<string, { x: number; y: number }>();
+  for (const node of flowNodes.value) {
+    positionsLookup.set(node.id, { x: node.position.x, y: node.position.y });
+  }
+
+  const tasks = flowTasks.value.map((task, index) => {
+    const nodePosition = nodeLookup.get(task.id)?.position;
+    return {
+      id: task.id,
+      name: (task.title || getFlowTaskBaseLabel(index + 1)).trim(),
+      screenId: task.screenId.trim(),
+      position: {
+        x: nodePosition?.x ?? buildFlowNodePosition(index).x,
+        y: nodePosition?.y ?? buildFlowNodePosition(index).y,
+      },
+    };
+  });
+
+  const edges = flowEdges.value.map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    sourceHandle: sanitizeFlowDiagramHandle(edge.sourceHandle),
+    targetHandle: sanitizeFlowDiagramHandle(edge.targetHandle),
+  }));
+
+  for (const task of tasks) {
+    if (!task.name.trim()) {
+      task.name = getFlowTaskBaseLabel(tasks.indexOf(task) + 1);
+    }
+    if (!task.id || !task.id.trim()) {
+      task.id = getFlowTaskId();
+    }
+    if (Number.isNaN(task.position.x) || Number.isNaN(task.position.y)) {
+      const fallback = positionsLookup.get(task.id) ?? buildFlowNodePosition(tasks.indexOf(task));
+      task.position = fallback;
+    }
+    if (task.id && positionsLookup.has(task.id)) {
+      positionsLookup.delete(task.id);
+    }
+  }
+
+  return {
+    tasks,
+    edges,
+  };
+}
+
+function queueFlowDiagramPersist() {
+  if (!isFlowDiagramHydrated.value || isFlowDiagramHydrating.value) {
+    return;
+  }
+
+  if (flowDiagramSaveTimer.value) {
+    clearTimeout(flowDiagramSaveTimer.value);
+  }
+
+  flowDiagramSaveTimer.value = setTimeout(() => {
+    flowDiagramSaveTimer.value = null;
+    void persistFlowDiagram();
+  }, FLOW_DIAGRAM_AUTO_SAVE_MS);
+}
+
+async function persistFlowDiagram() {
+  try {
+    await sessionService.saveFlowDiagram(buildTaskFlowDiagramFromState());
+  } catch (_error) {
+    // No-op. Diagram persistence should not block editor usage.
+  }
+}
+
+function applyFlowDiagram(diagram: TaskFlowDiagram) {
+  const validScreenIDs = new Set(screens.value.map((screen) => screen.id));
+  const nodePositions = new Map<string, { x: number; y: number }>();
+
+  const normalizedTasks: FlowTask[] = [];
+  const seenTaskIDs = new Set<string>();
+  const diagramTasks = diagram.tasks || [];
+
+  for (const entry of diagramTasks) {
+    const taskPosition = {
+      x: Number.isFinite(entry.position?.x) ? entry.position!.x : 0,
+      y: Number.isFinite(entry.position?.y) ? entry.position!.y : 0,
+    };
+
+    let id = (entry.id || '').trim();
+    if (!id || seenTaskIDs.has(id)) {
+      id = getFlowTaskId();
+    }
+    seenTaskIDs.add(id);
+    if (!taskPositionIsDefault(taskPosition)) {
+      nodePositions.set(id, taskPosition);
+    }
+
+    normalizedTasks.push({
+      id,
+      title: entry.name?.trim() || getFlowTaskBaseLabel(normalizedTasks.length + 1),
+      screenId: validScreenIDs.has((entry.screenId || '').trim()) ? entry.screenId.trim() : '',
+    });
+  }
+
+  if (screens.value.length > 0) {
+    const assignedScreenIds = new Set(normalizedTasks.map((task) => task.screenId).filter((screenId) => screenId));
+    for (const screen of screens.value) {
+      if (!assignedScreenIds.has(screen.id)) {
+        normalizedTasks.push({
+          id: getFlowTaskId(),
+          title: screen.name,
+          screenId: screen.id,
+        });
+      }
+    }
+  }
+
+  if (normalizedTasks.length > 0) {
+    let maxSuffix = 0;
+    for (const task of normalizedTasks) {
+      const numeric = /^task-(\d+)$/.exec(task.id);
+      if (numeric && numeric[1]) {
+        const next = Number.parseInt(numeric[1], 10);
+        if (Number.isFinite(next) && next > maxSuffix) {
+          maxSuffix = next;
+        }
+      }
+    }
+    if (maxSuffix >= flowTaskCounter.value) {
+      flowTaskCounter.value = maxSuffix + 1;
+    }
+  }
+
+  const oldPositions = new Map<string, { x: number; y: number }>();
+  for (const node of flowNodes.value) {
+    oldPositions.set(node.id, { x: node.position.x, y: node.position.y });
+  }
+
+  flowTasks.value = normalizedTasks.map((task, index) => ({
+    ...task,
+    title: task.title || getFlowTaskBaseLabel(index + 1),
+  }));
+
+  const validTaskIds = new Set(flowTasks.value.map((task) => task.id));
+  const normalizedEdges = (diagram.edges || [])
+    .map((edge, index) => {
+      const source = (edge.source || '').trim();
+      const target = (edge.target || '').trim();
+      if (!source || !target) {
+        return null;
+      }
+      if (!validTaskIds.has(source) || !validTaskIds.has(target)) {
+        return null;
+      }
+      return {
+        id: (edge.id || `edge-${source}-${target}-${index + 1}`).trim(),
+        source,
+        target,
+        sourceHandle: sanitizeFlowDiagramHandle(edge.sourceHandle),
+        targetHandle: sanitizeFlowDiagramHandle(edge.targetHandle),
+      } as FlowEdge;
+    })
+    .filter((edge): edge is FlowEdge => edge !== null);
+
+  flowEdges.value = normalizedEdges.map((edge) => ({
+    ...edge,
+    style: buildFlowEdgeStyle(edge.id),
+  }));
+
+  flowNodes.value = flowTasks.value.map((task, index) => {
+    const position = normalizeTaskPosition(task.id, index, oldPositions);
+    const restoredPosition = nodePositions.get(task.id);
+    return {
+      id: task.id,
+      type: 'flow-task',
+      position: restoredPosition ?? position,
+      data: {
+        taskId: task.id,
+        title: task.title,
+        screenId: task.screenId,
+      },
+    };
+  });
+
+  selectedFlowEdgeId.value = '';
+  syncFlowEdgeSelectionStyle();
+
+  for (const task of flowTasks.value) {
+    void ensureFlowTaskPreview(task.id, task.screenId);
+  }
+}
+
+function taskPositionIsDefault(position: { x: number; y: number }) {
+  return position.x === 0 && position.y === 0;
+}
+
+async function hydrateFlowDiagramFromSession() {
+  isFlowDiagramHydrating.value = true;
+  try {
+    const loaded = await sessionService.loadFlowDiagram();
+    applyFlowDiagram(loaded?.diagram || { tasks: [], edges: [] });
+  } catch (_error) {
+    applyFlowDiagram({ tasks: [], edges: [] });
+  } finally {
+    isFlowDiagramHydrating.value = false;
+    isFlowDiagramHydrated.value = true;
+    queueFlowDiagramPersist();
+  }
 }
 
 function clearFlowTaskPreviews() {
@@ -1154,10 +1385,12 @@ onMounted(async () => {
   try {
     isHydratingSession.value = true;
     await restoreLastSession();
+    await hydrateFlowDiagramFromSession();
   } catch (_error) {
     message.value = 'No se pudo cargar la última sesión.';
     try {
       await createNewScreen();
+      await hydrateFlowDiagramFromSession();
     } catch (_createError) {
       clearGeneratedState('No se pudo restaurar ni crear una pantalla. Refresca la página.');
     }
@@ -2110,7 +2343,15 @@ onBeforeUnmount(() => {
     cleanupStyle.value();
     cleanupStyle.value = null;
   }
+  if (flowDiagramSaveTimer.value) {
+    clearTimeout(flowDiagramSaveTimer.value);
+    flowDiagramSaveTimer.value = null;
+  }
   clearFlowTaskPreviews();
+});
+
+watch([flowTasks, flowNodes, flowEdges], queueFlowDiagramPersist, {
+  deep: true,
 });
 
 function onPromptKeydown(event: KeyboardEvent) {

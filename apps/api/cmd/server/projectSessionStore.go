@@ -36,6 +36,37 @@ type sessionPayload struct {
 	Metadata  json.RawMessage     `json:"metadata"`
 }
 
+type flowTaskPosition struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+type flowDiagramTask struct {
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	ScreenID string          `json:"screenId"`
+	Position flowTaskPosition `json:"position"`
+}
+
+type flowDiagramConnection struct {
+	ID           string  `json:"id"`
+	Source       string  `json:"source"`
+	Target       string  `json:"target"`
+	SourceHandle *string `json:"sourceHandle"`
+	TargetHandle *string `json:"targetHandle"`
+}
+
+type taskFlowDiagram struct {
+	Tasks []flowDiagramTask       `json:"tasks"`
+	Edges []flowDiagramConnection `json:"edges"`
+}
+
+type flowDiagramRecord struct {
+	ProjectID string         `json:"projectId"`
+	Diagram  taskFlowDiagram `json:"diagram"`
+	UpdatedAt string        `json:"updatedAt"`
+}
+
 type saveScreenStateRequest struct {
 	Conversation    []sessionChatMessage `json:"conversation"`
 	Recommendations []string             `json:"recommendations"`
@@ -629,6 +660,78 @@ func (s *sessionProjectStore) getSnapshot(ctx context.Context) (sessionSnapshot,
 	}
 
 	return snapshot, nil
+}
+
+func (s *sessionProjectStore) saveFlowDiagram(ctx context.Context, projectID string, diagram taskFlowDiagram) (flowDiagramRecord, error) {
+	diagramPayload, err := json.Marshal(diagram)
+	if err != nil {
+		return flowDiagramRecord{}, fmt.Errorf("invalid flow diagram payload: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO flow_diagrams (project_id, diagram_payload_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(project_id) DO UPDATE SET
+		  diagram_payload_json = excluded.diagram_payload_json,
+		  updated_at = excluded.updated_at;`,
+		projectID,
+		string(diagramPayload),
+		now,
+		now,
+	); err != nil {
+		return flowDiagramRecord{}, err
+	}
+
+	return flowDiagramRecord{
+		ProjectID: projectID,
+		Diagram:   diagram,
+		UpdatedAt: now,
+	}, nil
+}
+
+func (s *sessionProjectStore) loadFlowDiagram(ctx context.Context, projectID string) (flowDiagramRecord, bool, error) {
+	const query = `SELECT diagram_payload_json, updated_at FROM flow_diagrams WHERE project_id = ?;`
+
+	var payload string
+	var updatedAt string
+	if err := s.db.QueryRowContext(ctx, query, projectID).Scan(&payload, &updatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return flowDiagramRecord{
+				ProjectID: projectID,
+				Diagram: taskFlowDiagram{
+					Tasks: []flowDiagramTask{},
+					Edges: []flowDiagramConnection{},
+				},
+				UpdatedAt: "",
+			}, false, nil
+		}
+		return flowDiagramRecord{}, false, err
+	}
+
+	diagram := taskFlowDiagram{
+		Tasks: []flowDiagramTask{},
+		Edges: []flowDiagramConnection{},
+	}
+	if payload != "" {
+		if err := json.Unmarshal([]byte(payload), &diagram); err != nil {
+			return flowDiagramRecord{}, true, err
+		}
+	}
+
+	if diagram.Tasks == nil {
+		diagram.Tasks = []flowDiagramTask{}
+	}
+	if diagram.Edges == nil {
+		diagram.Edges = []flowDiagramConnection{}
+	}
+
+	return flowDiagramRecord{
+		ProjectID: projectID,
+		Diagram:   diagram,
+		UpdatedAt: updatedAt,
+	}, true, nil
 }
 
 func newSessionID() string {
