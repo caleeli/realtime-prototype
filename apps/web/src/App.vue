@@ -622,21 +622,31 @@ function onFlowNodeInput(taskId: string, event: Event) {
   setFlowTaskTitle(taskId, nextTitle);
 }
 
-function onFlowNodeOpen(taskId: string) {
-  focusFlowTask(taskId);
+async function onFlowNodeOpen(taskId: string) {
+  await focusFlowTask(taskId);
 }
 
 function getFlowNodeView(taskId: string) {
   return flowNodesWithPreviews.value.find((node) => node.id === taskId);
 }
 
-function focusFlowTask(taskId: string) {
+async function focusFlowTask(taskId: string) {
   const task = flowTasks.value.find((item) => item.id === taskId);
   if (!task || !task.screenId) {
     return;
   }
+
+  isBuilderMinimized.value = false;
   activeScreenId.value = task.screenId;
-  void openScreen(task.screenId, { force: true });
+  try {
+    await openScreen(task.screenId, { force: true });
+  } catch (_error) {
+    message.value = 'No se pudo abrir la pantalla desde el flujo.';
+  }
+}
+
+function openBuilder() {
+  isBuilderMinimized.value = false;
 }
 
 function toggleBuilderMinimized() {
@@ -2037,7 +2047,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 <template>
   <main class="builder-root" :data-theme="activeTheme">
-    <section class="canvas-wrap">
+    <section v-if="!isBuilderMinimized" class="canvas-wrap">
       <header class="canvas-header">
         <div class="canvas-header-top">
           <div class="screen-toolbar">
@@ -2125,7 +2135,7 @@ function onPromptKeydown(event: KeyboardEvent) {
         </div>
       </header>
 
-      <article v-if="!isBuilderMinimized" class="canvas-surface">
+      <article class="canvas-surface">
         <Transition :name="themeTransitionDirection === 'left' ? 'canvas-swipe-left' : 'canvas-swipe-right'" mode="out-in">
           <div v-if="generatedComponent" :key="themeTransitionKey" class="canvas-content">
             <component :is="generatedComponent" />
@@ -2139,11 +2149,56 @@ function onPromptKeydown(event: KeyboardEvent) {
           </div>
         </div>
       </article>
-      <article v-else class="canvas-surface flow-surface">
+      <footer class="canvas-meta">
+        <p v-if="generatedState">
+          <strong>Tags usados:</strong>
+          {{ generatedState.view.usedTags.join(', ') }}
+        </p>
+        <p v-if="generatedState && generatedState.view.unresolvedTags.length">
+          <strong>No resueltos:</strong>
+          {{ generatedState.view.unresolvedTags.join(', ') }}
+        </p>
+        <div v-if="generatedState && uxEvaluationStatus !== 'idle'" class="ux-evaluator">
+          <p class="ux-evaluator-title">
+            <strong>Recomendaciones UX:</strong>
+            <span v-if="uxEvaluationStatus === 'loading'" class="ux-evaluator-status">Evaluando...</span>
+            <span v-else-if="uxEvaluationStatus === 'error'" class="ux-evaluator-status ux-evaluator-status-error"
+              >No disponible</span
+            >
+          </p>
+          <p v-if="uxEvaluationStatus === 'error' && uxEvaluationMessage" class="ux-evaluator-message">
+            {{ uxEvaluationMessage }}
+          </p>
+          <p v-else-if="uxEvaluationStatus === 'ready' && uxEvaluations.length === 0" class="ux-evaluator-message">
+            No se encontraron observaciones de UX.
+          </p>
+          <ul v-else-if="uxEvaluationStatus === 'ready' && uxEvaluations.length" class="ux-evaluator-list">
+            <li
+              v-for="(observation, observationIndex) in uxEvaluations"
+              :key="`${observationIndex}-${observation}`"
+              class="ux-evaluator-item"
+            >
+              {{ observation }}
+            </li>
+          </ul>
+        </div>
+      </footer>
+    </section>
+
+    <section v-else class="canvas-wrap">
+      <article class="canvas-surface flow-surface">
         <div class="flow-toolbar">
-          <h2>Flujo de tareas</h2>
+          <h2 class="text-body-emphasis flow-toolbar-title">Flujo de tareas</h2>
           <div class="flow-toolbar-actions">
-            <button type="button" class="screen-action-btn flow-toolbar-btn" :disabled="screens.length === 0" @click="addFlowTask">
+            <button type="button" class="screen-action-btn flow-toolbar-btn" @click="openBuilder">
+              Maximizar builder
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn flow-toolbar-btn"
+              :disabled="screens.length === 0"
+              @click="addFlowTask"
+            >
               + Nueva tarea
             </button>
           </div>
@@ -2215,44 +2270,9 @@ function onPromptKeydown(event: KeyboardEvent) {
           Conexiones activas: {{ flowEdges.length }}
         </p>
       </article>
-
-      <footer class="canvas-meta">
-        <p v-if="generatedState">
-          <strong>Tags usados:</strong>
-          {{ generatedState.view.usedTags.join(', ') }}
-        </p>
-        <p v-if="generatedState && generatedState.view.unresolvedTags.length">
-          <strong>No resueltos:</strong>
-          {{ generatedState.view.unresolvedTags.join(', ') }}
-        </p>
-        <div v-if="generatedState && uxEvaluationStatus !== 'idle'" class="ux-evaluator">
-          <p class="ux-evaluator-title">
-            <strong>Recomendaciones UX:</strong>
-            <span v-if="uxEvaluationStatus === 'loading'" class="ux-evaluator-status">Evaluando...</span>
-            <span v-else-if="uxEvaluationStatus === 'error'" class="ux-evaluator-status ux-evaluator-status-error"
-              >No disponible</span
-            >
-          </p>
-          <p v-if="uxEvaluationStatus === 'error' && uxEvaluationMessage" class="ux-evaluator-message">
-            {{ uxEvaluationMessage }}
-          </p>
-          <p v-else-if="uxEvaluationStatus === 'ready' && uxEvaluations.length === 0" class="ux-evaluator-message">
-            No se encontraron observaciones de UX.
-          </p>
-          <ul v-else-if="uxEvaluationStatus === 'ready' && uxEvaluations.length" class="ux-evaluator-list">
-            <li
-              v-for="(observation, observationIndex) in uxEvaluations"
-              :key="`${observationIndex}-${observation}`"
-              class="ux-evaluator-item"
-            >
-              {{ observation }}
-            </li>
-          </ul>
-        </div>
-      </footer>
     </section>
 
-    <section class="floating-prompt">
+    <section v-if="!isBuilderMinimized" class="floating-prompt">
       <div class="floating-prompt-title">
         <h2>Prompt</h2>
         <button
@@ -2576,7 +2596,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 .builder-root {
   min-height: 100vh;
   margin: 0;
-  padding: 2rem;
+  padding: 0;
   background: radial-gradient(circle at 16% 20%, #2a1b6b 0%, transparent 42%),
     radial-gradient(circle at 84% 10%, #1a7bf7 0%, transparent 38%), #0d1020;
   color: #f5f6ff;
@@ -2589,10 +2609,14 @@ function onPromptKeydown(event: KeyboardEvent) {
 .canvas-wrap {
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 18px;
-  padding: 1rem;
+  padding: 0;
   background: rgba(16, 19, 36, 0.9);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
-  min-height: calc(100vh - 4rem);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .canvas-header h1 {
@@ -2720,20 +2744,23 @@ function onPromptKeydown(event: KeyboardEvent) {
 .canvas-surface {
   background: var(--bs-body-bg);
   border: 1px dashed rgba(255, 255, 255, 0.2);
-  border-radius: 14px;
-  min-height: calc(100vh - 14rem);
-  max-height: calc(100vh - 14rem);
-  overflow: auto;
+  border-radius: 0;
+  min-height: 0;
+  overflow: hidden;
   color: var(--bs-body-color);
   position: relative;
+  flex: 1 1 auto;
 }
 
 .flow-surface {
   overflow: hidden;
   position: relative;
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 0.75rem;
+  min-height: 0;
+  flex: 1;
+  border-radius: 0;
 }
 
 .flow-toolbar {
@@ -2746,7 +2773,6 @@ function onPromptKeydown(event: KeyboardEvent) {
 .flow-toolbar h2 {
   margin: 0;
   font-size: 1.02rem;
-  color: #e5ebff;
 }
 
 .flow-toolbar-actions {
@@ -2761,17 +2787,18 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .flow-canvas {
   position: relative;
-  min-height: 360px;
   overflow: auto;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
+  border-radius: 0;
   background: rgba(8, 11, 28, 0.82);
+  min-height: 0;
+  flex: 1;
 }
 
 .flow-canvas-instance {
   width: 100%;
-  min-height: 360px;
-  height: 65vh;
+  min-height: 0;
+  height: 100%;
 }
 
 .flow-canvas-instance :deep(.vue-flow) {
