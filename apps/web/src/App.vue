@@ -1690,7 +1690,7 @@ function parseUxRecommendation(observation: string) {
     severity,
     text: payload,
     requestText:
-      `Aplica esta recomendación UX (${severity.toUpperCase()}): ${recommendation || payload}`,
+      `${recommendation || payload}`,
   };
 }
 
