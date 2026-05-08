@@ -2304,24 +2304,29 @@ function onPromptKeydown(event: KeyboardEvent) {
         </div>
       </div>
       <div v-if="actionableUxRecommendations.length > 0" class="ux-recommendation-bubbles">
-        <button
+        <b-button
           v-for="suggestion in actionableUxRecommendations"
           :key="suggestion.id"
           type="button"
           class="ux-recommendation-bubble"
+          v-b-tooltip="{ title: suggestion.text }"
           :class="{
+            btn: true,
+            'btn-danger': suggestion.severity === 'high',
+            'btn-warning': suggestion.severity === 'medium',
+            'btn-dark': suggestion.severity !== 'high' && suggestion.severity !== 'medium',
             'ux-recommendation-bubble--high': suggestion.severity === 'high',
             'ux-recommendation-bubble--medium': suggestion.severity === 'medium',
             'ux-recommendation-bubble--burst': explodingBubbleId === suggestion.id,
           }"
-          :title="`Aplicar sugerencia ${suggestion.text}`"
+          :aria-label="suggestion.text"
           @click="onUxSuggestionClick(suggestion)"
         >
-          <span class="ux-recommendation-severity">
-            {{ suggestion.severity.toUpperCase() }}
+          <span class="ux-recommendation-bubble-letter">
+            {{ suggestion.severity === 'high' ? 'H' : suggestion.severity === 'medium' ? 'M' : 'L' }}
           </span>
-          <span class="ux-recommendation-text">{{ suggestion.text }}</span>
-        </button>
+          <span class="ux-recommendation-text-visually-hidden">{{ suggestion.text }}</span>
+        </b-button>
       </div>
       <textarea
         ref="promptInput"
@@ -3060,31 +3065,42 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .ux-recommendation-bubbles {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-bottom: 0.7rem;
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  gap: 0.35rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: none;
+  padding: 0.24rem 0 0;
 }
 
 .ux-recommendation-bubble {
+  align-self: flex-end;
+  flex: 0 0 1rem;
+  width: 1rem;
+  height: 1rem;
+  min-width: 1rem;
+  min-height: 1rem;
+  border-radius: 9999px;
+  padding: 0;
+  display: inline-flex;
   appearance: none;
   border: 0;
-  border-radius: 999px;
-  padding: 0.45rem 0.62rem;
-  color: #f4f7ff;
+  color: var(--bs-light);
   cursor: pointer;
-  display: flex;
   align-items: center;
-  gap: 0.45rem;
-  max-width: 100%;
-  text-align: left;
-  background: rgba(15, 23, 54, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.22);
-  transition: transform 140ms ease, box-shadow 140ms ease;
+  justify-content: center;
+  text-align: center;
+  border: 1px solid transparent;
+  background: rgba(var(--bs-body-color-rgb, 248, 249, 250), 0.22);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.16);
+  transition: transform 140ms ease, opacity 140ms ease, box-shadow 140ms ease;
+  margin-top: 0.12rem;
 }
 
 .ux-recommendation-bubble:hover:not(:disabled) {
-  transform: translateY(-1px);
+  transform: translateY(-1px) scale(1.08);
   box-shadow: 0 14px 26px rgba(0, 0, 0, 0.35);
 }
 
@@ -3094,44 +3110,39 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .ux-recommendation-bubble--high {
-  border-color: rgba(255, 118, 118, 0.58);
-  background: rgba(87, 22, 22, 0.55);
+  border-color: rgba(var(--bs-danger-rgb), 0.8);
+  background: color-mix(in srgb, rgba(var(--bs-danger-rgb), 0.42) 52%, transparent);
+  color: var(--bs-light);
 }
 
 .ux-recommendation-bubble--medium {
-  border-color: rgba(240, 180, 42, 0.58);
-  background: rgba(83, 55, 5, 0.45);
+  border-color: rgba(var(--bs-warning-rgb), 0.8);
+  background: color-mix(in srgb, rgba(var(--bs-warning-rgb), 0.42) 52%, transparent);
+  color: var(--bs-dark);
 }
 
-.ux-recommendation-bubble--high .ux-recommendation-severity {
-  color: #ffcdcd;
-  background: rgba(255, 95, 95, 0.2);
-  border-color: rgba(255, 145, 145, 0.58);
-}
-
-.ux-recommendation-bubble--medium .ux-recommendation-severity {
-  color: #ffdfaf;
-  background: rgba(255, 188, 64, 0.2);
-  border-color: rgba(255, 205, 104, 0.58);
-}
-
-.ux-recommendation-severity {
-  text-transform: uppercase;
-  font-size: 0.66rem;
-  border-radius: 999px;
-  border: 1px solid currentColor;
-  padding: 0.08rem 0.34rem;
+.ux-recommendation-bubble-letter {
+  font-size: 0.58rem;
+  line-height: 1;
   font-weight: 700;
-  letter-spacing: 0.05em;
-  white-space: nowrap;
+  font-family: var(--bs-font-sans-serif);
+  letter-spacing: 0.01em;
 }
 
-.ux-recommendation-text {
-  font-size: 0.78rem;
-  color: #f7f9ff;
-  white-space: nowrap;
+.ux-recommendation-text-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ux-recommendation-bubbles::-webkit-scrollbar {
+  display: none;
 }
 
 .ux-recommendation-bubble--burst {
