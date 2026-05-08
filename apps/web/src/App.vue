@@ -2616,7 +2616,6 @@ function onPromptKeydown(event: KeyboardEvent) {
 
   min-height: 100vh;
   margin: 0;
-  padding: 1.25rem;
   background: var(--rp-bg-app);
   color: var(--rp-text);
   font-family:
@@ -2643,7 +2642,6 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .canvas-wrap {
   border: 1px solid var(--rp-border);
-  border-radius: 16px;
   padding: 0;
   background: var(--rp-bg-panel);
   box-shadow: var(--rp-shadow-sm);
