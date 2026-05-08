@@ -3332,14 +3332,14 @@ function onPromptKeydown(event: KeyboardEvent) {
   width: 100%;
   min-width: 280px;
   min-height: 260px;
-  background: rgba(17, 23, 52, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 12px;
+  background: linear-gradient(155deg, #ffffff 0%, #f5f7fb 100%);
+  border: 1px solid var(--rp-border);
+  border-radius: 14px;
   display: grid;
   gap: 0.55rem;
   padding: 0.6rem;
-  color: #f4f7ff;
-  box-shadow: 0 10px 25px rgba(2, 10, 26, 0.34);
+  color: var(--rp-text);
+  box-shadow: var(--rp-shadow-md);
 }
 
 .flow-task-header {
@@ -3350,11 +3350,22 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .flow-task-title {
   flex: 1;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
-  background: #0d132f;
-  color: #f4f7ff;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
   padding: 0.35rem 0.55rem;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.flow-task-title:focus {
+  outline: none;
+  border-color: var(--rp-primary);
+  box-shadow: 0 0 0 2px var(--rp-primary-soft);
+}
+
+.flow-task-title::placeholder {
+  color: var(--rp-text-muted);
 }
 
 .flow-task-remove {
@@ -3365,26 +3376,34 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .flow-task-screen-label {
   font-size: 0.8rem;
-  color: #c7d5ef;
+  color: var(--rp-text-muted);
+  font-weight: 600;
 }
 
 .flow-task-screen-select {
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border: 1px solid var(--rp-border);
   border-radius: 8px;
   background: var(--rp-bg-panel);
   color: var(--rp-text);
   padding: 0.35rem 0.55rem;
 }
 
+.flow-task-screen-select:focus {
+  outline: none;
+  border-color: var(--rp-primary);
+  box-shadow: 0 0 0 2px var(--rp-primary-soft);
+}
+
 .flow-task-preview {
   border: 1px solid var(--rp-border);
   border-radius: 8px;
-  background: var(--rp-bg-canvas);
+  background: var(--rp-bg-panel);
   width: 300px;
   height: 200px;
   overflow: hidden;
   position: relative;
   padding: 0.2rem;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.04);
 }
 
 .flow-preview-component {
