@@ -42,6 +42,7 @@ const uxEvaluatorSystemPromptTemplateEnv = "UX_EVALUATOR_SYSTEM_PROMPT_PATH"
 const inspirationConversionPromptTemplatePath = "cmd/server/inspiration-conversion-prompt.txt"
 const inspirationConversionPromptTemplateEnv = "INSPIRATION_CONVERSION_PROMPT_PATH"
 const generationRepairEnabledEnv = "GENERATION_REPAIR_ENABLED"
+const generationRepairMaxAttemptsEnv = "GENERATION_REPAIR_MAX_ATTEMPTS"
 const generationChatCompressionEnabledEnv = "GENERATION_CHAT_COMPRESSION_ENABLED"
 const generationChatCompressionMaxPreviousAssistantMessagesEnv = "GENERATION_CHAT_MAX_PREVIOUS_ASSISTANT_MESSAGES"
 const cerebrasReasoningEffortEnv = "CEREBRAS_REASONING_EFFORT"
@@ -818,11 +819,8 @@ func callCerebrasGeneration(ctx context.Context, input generationRequest) (gener
 	messages := buildCerebrasRequestMessagesForResponse(input)
 	requestMessages := compressConversationMessagesForRequest(messages)
 
-	maxAttempts := 1
-	repairEnabled := parseBoolFromEnv(generationRepairEnabledEnv, false)
-	if repairEnabled {
-		maxAttempts = 2
-	}
+	maxAttempts := generationMaxAttempts()
+	repairEnabled := maxAttempts > 1
 
 	var output generationResponse
 	var outputContent string
@@ -910,11 +908,8 @@ func callCerebrasDataGeneration(ctx context.Context, input dataGenerationRequest
 	messages := buildCerebrasDataGenerationMessagesForResponse(input)
 	requestMessages := compressConversationMessagesForRequest(messages)
 
-	maxAttempts := 1
-	repairEnabled := parseBoolFromEnv(generationRepairEnabledEnv, false)
-	if repairEnabled {
-		maxAttempts = 2
-	}
+	maxAttempts := generationMaxAttempts()
+	repairEnabled := maxAttempts > 1
 
 	var output dataGenerationResponse
 	var outputContent string
@@ -989,11 +984,8 @@ func callCerebrasPugGeneration(ctx context.Context, input pugGenerationRequest) 
 	messages := buildCerebrasPugGenerationMessagesForResponse(input)
 	requestMessages := compressConversationMessagesForRequest(messages)
 
-	maxAttempts := 1
-	repairEnabled := parseBoolFromEnv(generationRepairEnabledEnv, false)
-	if repairEnabled {
-		maxAttempts = 2
-	}
+	maxAttempts := generationMaxAttempts()
+	repairEnabled := maxAttempts > 1
 
 	var output pugGenerationResponse
 	var outputContent string
@@ -1898,6 +1890,31 @@ func callVisionToCode(
 	}
 }
 
+func repairVisionOutputAsJSON(rawOutput string) (string, error) {
+	jsonCandidate, err := extractJSONFromText(rawOutput)
+	if err != nil {
+		return "", fmt.Errorf("model output is not JSON: %w", err)
+	}
+
+	decodedCandidate := normalizeGeneratedJSONCandidate(jsonCandidate)
+	var output generationResponse
+	if err := parseGenerationJSONCandidate(decodedCandidate, &output); err != nil {
+		return "", err
+	}
+
+	output = sanitizeGenerationResponse(output)
+	if err := validateGenerationResponse(&output); err != nil {
+		return "", fmt.Errorf("invalid generated output: %w", err)
+	}
+
+	rawBytes, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode repaired vision output: %w", err)
+	}
+
+	return string(rawBytes), nil
+}
+
 func callVisionToCodeOpenAI(
 	ctx context.Context,
 	endpoint string,
@@ -1908,9 +1925,6 @@ func callVisionToCodeOpenAI(
 	imageBase64 string,
 	imagePrompt string,
 ) (string, error) {
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	input := []visionPrompt{
 		{
 			Role: "user",
@@ -1935,57 +1949,90 @@ func callVisionToCodeOpenAI(
 		return "", fmt.Errorf("failed to build vision request: %w", err)
 	}
 
-	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
-	if err != nil {
-		return "", err
-	}
-	httpRequest.Header.Set("Content-Type", "application/json")
-	applyProviderAuth(httpRequest, inspirationImageProviderOpenAI, apiKey)
+	maxAttempts := generationMaxAttempts()
+	repairEnabled := maxAttempts > 1
+
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	httpClient := &http.Client{Timeout: timeout}
-	response, err := httpClient.Do(httpRequest)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return "", fmt.Errorf("vision conversion request timeout")
+	var lastErr error
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
+		if err != nil {
+			return "", err
 		}
-		return "", err
-	}
-	defer response.Body.Close()
+		httpRequest.Header.Set("Content-Type", "application/json")
+		applyProviderAuth(httpRequest, inspirationImageProviderOpenAI, apiKey)
 
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return "", err
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		errorMessage := strings.TrimSpace(string(body))
-		if errorMessage == "" {
-			errorMessage = http.StatusText(response.StatusCode)
+		response, err := httpClient.Do(httpRequest)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return "", fmt.Errorf("vision conversion request timeout")
+			}
+			return "", err
 		}
-		return "", fmt.Errorf("vision API returned %d: %s", response.StatusCode, errorMessage)
-	}
 
-	var parsed visionResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("invalid vision response: %w", err)
-	}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			return "", err
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			errorMessage := strings.TrimSpace(string(body))
+			if errorMessage == "" {
+				errorMessage = http.StatusText(response.StatusCode)
+			}
+			return "", fmt.Errorf("vision API returned %d: %s", response.StatusCode, errorMessage)
+		}
 
-	if strings.TrimSpace(parsed.OutputText) != "" {
-		return strings.TrimSpace(parsed.OutputText), nil
-	}
+		var parsed visionResponse
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return "", fmt.Errorf("invalid vision response: %w", err)
+		}
 
-	for _, output := range parsed.Output {
-		for _, content := range output.Content {
-			if strings.TrimSpace(content.Text) != "" {
-				return strings.TrimSpace(content.Text), nil
+		visionText := ""
+		if strings.TrimSpace(parsed.OutputText) != "" {
+			visionText = strings.TrimSpace(parsed.OutputText)
+		} else {
+			for _, output := range parsed.Output {
+				for _, content := range output.Content {
+					if strings.TrimSpace(content.Text) != "" {
+						visionText = strings.TrimSpace(content.Text)
+						break
+					}
+				}
+				if visionText != "" {
+					break
+				}
 			}
 		}
+
+		if visionText == "" && len(parsed.Choices) > 0 && strings.TrimSpace(parsed.Choices[0].Message.Content) != "" {
+			visionText = strings.TrimSpace(parsed.Choices[0].Message.Content)
+		}
+
+		if visionText == "" {
+			lastErr = fmt.Errorf("model output is not JSON: vision API response has no textual output")
+		} else if repaired, err := repairVisionOutputAsJSON(visionText); err == nil {
+			return repaired, nil
+		} else {
+			lastErr = err
+		}
+
+		if !repairEnabled || attempt+1 >= maxAttempts || !isRecoverableGeneratedJSONError(lastErr) {
+			if visionText != "" {
+				return "", fmt.Errorf("%w\n%s", lastErr, visionText)
+			}
+			return "", fmt.Errorf("%w", lastErr)
+		}
 	}
 
-	if len(parsed.Choices) > 0 && strings.TrimSpace(parsed.Choices[0].Message.Content) != "" {
-		return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
+	if lastErr == nil {
+		return "", errors.New("vision API response has no textual output")
 	}
-
-	return "", fmt.Errorf("vision API response has no textual output")
+	return "", lastErr
 }
 
 func callVisionToCodeGoogle(
@@ -1998,9 +2045,6 @@ func callVisionToCodeGoogle(
 	imageBase64 string,
 	imagePrompt string,
 ) (string, error) {
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	requestEndpoint, err := appendGoogleAPIKey(endpoint, apiKey)
 	if err != nil {
 		return "", err
@@ -2026,49 +2070,82 @@ func callVisionToCodeGoogle(
 		return "", fmt.Errorf("failed to build google vision request: %w", err)
 	}
 
-	httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, requestEndpoint, bytes.NewReader(requestBody))
-	if err != nil {
-		return "", err
-	}
-	httpRequest.Header.Set("Content-Type", "application/json")
-	applyProviderAuth(httpRequest, inspirationImageProviderGoogle, apiKey)
+	maxAttempts := generationMaxAttempts()
+	repairEnabled := maxAttempts > 1
+
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	httpClient := &http.Client{Timeout: timeout}
-	response, err := httpClient.Do(httpRequest)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return "", fmt.Errorf("google vision conversion request timeout")
+	var lastErr error
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		httpRequest, err := http.NewRequestWithContext(callCtx, http.MethodPost, requestEndpoint, bytes.NewReader(requestBody))
+		if err != nil {
+			return "", err
 		}
-		return "", err
-	}
-	defer response.Body.Close()
+		httpRequest.Header.Set("Content-Type", "application/json")
+		applyProviderAuth(httpRequest, inspirationImageProviderGoogle, apiKey)
 
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return "", err
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		errorMessage := strings.TrimSpace(string(body))
-		if errorMessage == "" {
-			errorMessage = http.StatusText(response.StatusCode)
+		response, err := httpClient.Do(httpRequest)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				return "", fmt.Errorf("google vision conversion request timeout")
+			}
+			return "", err
 		}
-		return "", fmt.Errorf("google vision API returned %d: %s", response.StatusCode, errorMessage)
-	}
 
-	var parsed geminiVisionResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("invalid google vision response: %w", err)
-	}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			return "", err
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			errorMessage := strings.TrimSpace(string(body))
+			if errorMessage == "" {
+				errorMessage = http.StatusText(response.StatusCode)
+			}
+			return "", fmt.Errorf("google vision API returned %d: %s", response.StatusCode, errorMessage)
+		}
 
-	for _, candidate := range parsed.Candidates {
-		for _, part := range candidate.Content.Parts {
-			if strings.TrimSpace(part.Text) != "" {
-				return strings.TrimSpace(part.Text), nil
+		var parsed geminiVisionResponse
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return "", fmt.Errorf("invalid google vision response: %w", err)
+		}
+
+		visionText := ""
+		for _, candidate := range parsed.Candidates {
+			for _, part := range candidate.Content.Parts {
+				if strings.TrimSpace(part.Text) != "" {
+					visionText = strings.TrimSpace(part.Text)
+					break
+				}
+			}
+			if visionText != "" {
+				break
 			}
 		}
+
+		if visionText == "" {
+			lastErr = fmt.Errorf("model output is not JSON: google vision response has no textual output")
+		} else if repaired, err := repairVisionOutputAsJSON(visionText); err == nil {
+			return repaired, nil
+		} else {
+			lastErr = err
+		}
+
+		if !repairEnabled || attempt+1 >= maxAttempts || !isRecoverableGeneratedJSONError(lastErr) {
+			if visionText != "" {
+				return "", fmt.Errorf("%w\n%s", lastErr, visionText)
+			}
+			return "", fmt.Errorf("%w", lastErr)
+		}
 	}
 
-	return "", fmt.Errorf("google vision response has no textual output")
+	if lastErr == nil {
+		return "", errors.New("google vision response has no textual output")
+	}
+	return "", lastErr
 }
 
 func buildVisionPromptForImage(basePrompt string, imagePrompt string) string {
@@ -3667,6 +3744,14 @@ func parseIntFromEnv(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func generationMaxAttempts() int {
+	if !parseBoolFromEnv(generationRepairEnabledEnv, false) {
+		return 1
+	}
+
+	return parseIntFromEnv(generationRepairMaxAttemptsEnv, 2)
 }
 
 func parseOptionalFloatFromEnv(key string) *float64 {
