@@ -171,6 +171,7 @@ const promptText: Ref<string> = ref('');
 const promptInput = ref<HTMLTextAreaElement | null>(null);
 const conversation: Ref<ChatMessage[]> = ref([]);
 const isConversationVisible = ref(false);
+const isBuilderPanelMinimized = ref(false);
 const isGenerating = ref(false);
 const didUseInspiration = ref(false);
 const message = ref('Escribe una descripción y pulsa "Generar pantalla".');
@@ -2448,6 +2449,13 @@ function toggleConversationVisibility() {
   isConversationVisible.value = !isConversationVisible.value;
 }
 
+function toggleBuilderPanelMinimized() {
+  isBuilderPanelMinimized.value = !isBuilderPanelMinimized.value;
+  nextTick(() => {
+    focusPromptTextarea();
+  });
+}
+
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', isThemeHotkey);
   if (cleanupStyle.value) {
@@ -2584,10 +2592,27 @@ function onPromptKeydown(event: KeyboardEvent) {
         </button>
       </aside>
 
-      <aside v-if="primaryNav === 'builder'" class="builder-lateral" aria-label="Panel del builder">
+      <aside
+        v-if="primaryNav === 'builder'"
+        class="builder-lateral"
+        :class="{ 'builder-lateral--minimized': isBuilderPanelMinimized }"
+        aria-label="Panel del builder"
+      >
         <div class="builder-lateral-header">
-          <h2 class="builder-lateral-title">Builder</h2>
-          <p class="builder-lateral-sub">Describe la pantalla que quieres generar.</p>
+          <div class="builder-lateral-title-wrap">
+            <h2 class="builder-lateral-title">Builder</h2>
+            <p v-if="!isBuilderPanelMinimized" class="builder-lateral-sub">Describe la pantalla que quieres generar.</p>
+          </div>
+          <button
+            type="button"
+            class="builder-lateral-minimize-btn"
+            :aria-expanded="!isBuilderPanelMinimized"
+            :title="isBuilderPanelMinimized ? 'Expandir panel' : 'Minimizar panel'"
+            :aria-label="isBuilderPanelMinimized ? 'Expandir panel del builder' : 'Minimizar panel del builder'"
+            @click="toggleBuilderPanelMinimized"
+          >
+            <i class="bi" :class="isBuilderPanelMinimized ? 'bi-arrows-angle-expand' : 'bi-arrows-angle-contract'" aria-hidden="true"></i>
+          </button>
         </div>
 
         <div class="floating-prompt-title">
@@ -2604,7 +2629,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             <i class="bi bi-chat-left-text" aria-hidden="true"></i>
           </button>
         </div>
-        <div v-if="isConversationVisible" id="conversation-list" class="conversation-list">
+        <div v-if="isConversationVisible && !isBuilderPanelMinimized" id="conversation-list" class="conversation-list">
           <div v-if="conversation.length === 0" class="conversation-empty">
             Aún no hay mensajes. Escribe uno y pulsa ▶ para comenzar.
           </div>
@@ -2653,7 +2678,7 @@ function onPromptKeydown(event: KeyboardEvent) {
         <textarea
           ref="promptInput"
           v-model="promptText"
-          rows="5"
+          :rows="isBuilderPanelMinimized ? 3 : 5"
           class="builder-prompt-textarea"
           :placeholder="promptPlaceholder"
           :disabled="isGenerating"
@@ -2696,7 +2721,7 @@ function onPromptKeydown(event: KeyboardEvent) {
           </button>
         </div>
 
-        <div class="builder-context">
+        <div v-if="!isBuilderPanelMinimized" class="builder-context">
           <div class="builder-context-header">
             <span class="builder-context-heading">Contexto</span>
           </div>
@@ -2734,7 +2759,7 @@ function onPromptKeydown(event: KeyboardEvent) {
         </div>
 
         <div
-          v-if="uxEvaluationStatus === 'ready' && actionableUxRecommendations.length === 0 && !isGenerating"
+          v-if="!isBuilderPanelMinimized && uxEvaluationStatus === 'ready' && actionableUxRecommendations.length === 0 && !isGenerating"
           class="builder-feedback-ok"
         >
           <i class="bi bi-check-circle-fill" aria-hidden="true"></i>
@@ -3614,6 +3639,96 @@ function onPromptKeydown(event: KeyboardEvent) {
   border-right: 1px solid var(--rp-border);
   padding: 1rem 1rem 1.25rem;
   gap: 0.35rem;
+}
+
+.builder-lateral--minimized {
+  position: fixed;
+  right: 0.8rem;
+  bottom: 0.8rem;
+  width: min(400px, calc(100vw - 1.6rem));
+  max-height: min(70vh, calc(100vh - 2rem));
+  overflow: auto;
+  z-index: 45;
+  border-right: 1px solid color-mix(in srgb, var(--rp-border) 72%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--rp-bg-panel) 84%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow:
+    0 18px 35px rgba(15, 23, 42, 0.28),
+    0 10px 24px rgba(15, 23, 42, 0.18),
+    var(--rp-shadow-md);
+  animation: builder-lateral-morph 160ms ease;
+}
+
+.builder-lateral--minimized .builder-lateral-header {
+  margin-bottom: 0.5rem;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.builder-lateral-header {
+  margin-bottom: 0.35rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.builder-lateral-title-wrap {
+  min-width: 0;
+}
+
+.builder-lateral-minimize-btn {
+  width: 1.95rem;
+  height: 1.95rem;
+  border-radius: 999px;
+  border: 1px solid var(--rp-border);
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.builder-lateral-minimize-btn:hover:not(:disabled) {
+  background: var(--rp-bg-subtle);
+}
+
+.builder-lateral--minimized .builder-lateral-sub,
+.builder-lateral--minimized .builder-context,
+.builder-lateral--minimized .builder-feedback-ok {
+  display: none;
+}
+
+.builder-lateral--minimized .ux-recommendation-bubbles {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.builder-lateral--minimized .ux-recommendation-bubble-list {
+  flex-wrap: wrap;
+}
+
+.builder-lateral--minimized .builder-prompt-textarea {
+  min-height: 94px;
+}
+
+.builder-lateral--minimized .prompt-actions {
+  margin-top: 0.45rem;
+}
+
+@keyframes builder-lateral-morph {
+  from {
+    transform: translateY(8px) scale(0.985);
+    opacity: 0.65;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
 }
 
 .builder-lateral-header {
@@ -4594,12 +4709,6 @@ function onPromptKeydown(event: KeyboardEvent) {
   padding: 0.24rem 0 0;
 }
 
-.ux-recommendation-bubble-list {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
 .ux-bubble-enter-active,
 .ux-bubble-leave-active,
 .ux-bubble-move {
@@ -4641,6 +4750,7 @@ function onPromptKeydown(event: KeyboardEvent) {
   box-shadow: var(--rp-shadow-sm);
   transition: transform 140ms ease, opacity 140ms ease, box-shadow 140ms ease;
   margin-top: 0.12rem;
+  margin-right: 0.12rem;
 }
 
 .ux-recommendation-bubble:hover:not(:disabled) {
