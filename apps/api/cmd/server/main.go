@@ -1325,12 +1325,44 @@ func callImageGeneration(
 	style string,
 	n int,
 ) (string, error) {
+	prompt = buildImageGenerationPrompt(prompt, provider, size, quality, style, n)
+
 	switch provider {
 	case inspirationImageProviderGoogle:
 		return callImageGenerationGoogle(ctx, endpoint, model, apiKey, timeout, prompt, size, n)
 	default:
 		return callImageGenerationOpenAI(ctx, endpoint, model, apiKey, timeout, prompt, size, quality, style, n)
 	}
+}
+
+func buildImageGenerationPrompt(prompt string, provider string, size string, quality string, style string, n int) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return prompt
+	}
+
+	template := loadPromptTemplateFromEnv(
+		"cmd/server/image-generation-prompt.txt",
+		"INSPIRATION_IMAGE_PROMPT_TEMPLATE",
+		"{{prompt}}",
+	)
+
+	template = renderImagePromptTemplate(template, "prompt", prompt)
+	template = renderImagePromptTemplate(template, "provider", provider)
+	template = renderImagePromptTemplate(template, "size", size)
+	template = renderImagePromptTemplate(template, "aspect_ratio", mapImageSizeToAspectRatio(size))
+	template = renderImagePromptTemplate(template, "aspectRatio", mapImageSizeToAspectRatio(size))
+	template = renderImagePromptTemplate(template, "quality", quality)
+	template = renderImagePromptTemplate(template, "style", style)
+	template = renderImagePromptTemplate(template, "n", fmt.Sprint(n))
+
+	return strings.TrimSpace(template)
+}
+
+func renderImagePromptTemplate(template string, key string, value string) string {
+	template = strings.ReplaceAll(template, "{{"+key+"}}", value)
+	template = strings.ReplaceAll(template, "{{ "+key+" }}", value)
+	return template
 }
 
 func callImageGenerationOpenAI(

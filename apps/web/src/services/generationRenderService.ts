@@ -122,6 +122,32 @@ const HTML_TAGS = new Set([
   'video',
 ]);
 
+function resolveChartTagType(tag: string): string | null {
+  const normalized = normalizeTag(tag);
+  if (!normalized.startsWith('b-chart-')) {
+    return null;
+  }
+
+  const normalizedType = normalized.slice('b-chart-'.length);
+  if (normalizedType === 'polar-area' || normalizedType === 'polar_area' || normalizedType === 'polararea') {
+    return 'polararea';
+  }
+
+  if (
+    normalizedType === 'line' ||
+    normalizedType === 'bar' ||
+    normalizedType === 'pie' ||
+    normalizedType === 'doughnut' ||
+    normalizedType === 'radar' ||
+    normalizedType === 'bubble' ||
+    normalizedType === 'scatter'
+  ) {
+    return normalizedType;
+  }
+
+  return null;
+}
+
 function normalizeTag(tag: string): string {
   return toKebabTag(tag.trim()).toLowerCase();
 }
@@ -673,6 +699,15 @@ function toVNode(
 
   const normalizedNodeTag = normalizeTag(node.tag);
   const bootstrapNodeTag = normalizeBootstrapVueTag(normalizedNodeTag);
+  const chartType = resolveChartTagType(normalizedNodeTag);
+  if (
+    chartType &&
+    !Object.prototype.hasOwnProperty.call(props, 'chartType') &&
+    !Object.prototype.hasOwnProperty.call(props, 'chart-type') &&
+    !Object.prototype.hasOwnProperty.call(props, 'type')
+  ) {
+    props.chartType = chartType;
+  }
   const registered =
     componentRegistry?.[normalizedNodeTag] ??
     componentRegistry?.[bootstrapNodeTag] ??

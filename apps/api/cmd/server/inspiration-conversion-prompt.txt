@@ -13,6 +13,8 @@ Output constraints:
 - "css": plain CSS only, no preprocessors.
 - "data": object used by the generated template with realistic defaults.
 Prefer semantic class names and avoid inventing unknown components.
+For charts, use official tags from the `b-chart-*` namespace (`b-chart-line`, `b-chart-bar`, `b-chart-pie`, `b-chart-doughnut`, `b-chart-radar`, `b-chart-polararea`, `b-chart-bubble`, `b-chart-scatter`).
+Pass data with `:chart-data` and options with `:chart-options`.
 If needed, use Vue bindings (v-model, :prop, @event) and reference fields from data.
 Convert the provided image into a valid screen implementation that matches the visual design.
 

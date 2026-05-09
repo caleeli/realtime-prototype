@@ -1,0 +1,3 @@
+{{prompt}}
+All screen must be visible within the image, with no cropped UI elements.
+The aspect ratio should be landscape 3:2.

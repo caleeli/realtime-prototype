@@ -216,7 +216,7 @@ type EditorWorkspaceTab = 'canvas' | 'data' | 'pug' | 'css' | 'states';
 type FlowWorkspaceTab = 'canvas' | 'data' | 'states';
 
 const primaryNav = ref<PrimaryNav>('builder');
-const railCollapsed = ref(false);
+const railCollapsed = ref(true);
 const editorWorkspaceTab = ref<EditorWorkspaceTab>('canvas');
 const flowWorkspaceTab = ref<FlowWorkspaceTab>('canvas');
 const vueFlowRef = ref<InstanceType<typeof VueFlow> | null>(null);

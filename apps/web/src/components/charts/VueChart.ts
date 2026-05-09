@@ -8,6 +8,7 @@ interface ChartJsProps {
   chartType?: SupportedChartType | string;
   type?: string;
   chartData?: Record<string, unknown> | null;
+  data?: Record<string, unknown> | null;
   chartOptions?: Record<string, unknown>;
   options?: Record<string, unknown>;
   width?: number | string;
@@ -19,6 +20,10 @@ export default defineComponent({
   props: {
     chartType: String,
     type: String,
+    data: {
+      type: Object as unknown as PropType<Record<string, unknown> | null>,
+      default: () => null,
+    },
     chartData: {
       type: Object as unknown as PropType<Record<string, unknown> | null>,
       default: () => null,
@@ -42,7 +47,7 @@ export default defineComponent({
   },
   setup(props: Readonly<ChartJsProps>) {
     const dataPayload = computed<Record<string, unknown>>(() => {
-      const value = props.chartData;
+      const value = props.chartData ?? props.data;
       return value === null || value === undefined
         ? {
             labels: [],

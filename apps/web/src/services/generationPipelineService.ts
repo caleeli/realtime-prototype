@@ -213,6 +213,29 @@ const DEFAULT_BOOTSTRAP_VUE_TAGS_PASCAL = new Set<string>(
   }),
 );
 
+const CHART_TAG_TO_TYPE = new Map<string, string>([
+  ['line', 'line'],
+  ['bar', 'bar'],
+  ['pie', 'pie'],
+  ['doughnut', 'doughnut'],
+  ['radar', 'radar'],
+  ['polar-area', 'polararea'],
+  ['polar_area', 'polararea'],
+  ['polararea', 'polararea'],
+  ['bubble', 'bubble'],
+  ['scatter', 'scatter'],
+]);
+
+function resolveChartTagToType(tag: string): string | null {
+  const normalized = normalizeTag(tag);
+  if (!normalized.startsWith('b-chart-')) {
+    return null;
+  }
+
+  const rawType = normalized.slice('b-chart-'.length);
+  return CHART_TAG_TO_TYPE.get(rawType) ?? null;
+}
+
 const KNOWN_HTML_TAGS = new Set<string>([
   'a',
   'abbr',
@@ -859,6 +882,20 @@ function resolveImports(
   const nonBootstrapTags = new Set<string>();
 
   for (const tag of usedTags) {
+    const normalizedTag = normalizeTag(tag);
+    const chartType = resolveChartTagToType(tag);
+    if (chartType) {
+      nonBootstrapTags.add(tag);
+      importMap.set(normalizedTag, {
+        tag: normalizedTag,
+        localName: 'VueChart',
+        source: 'vue-chartjs',
+        pack: 'charts',
+        isCatalogResolved: true,
+      });
+      continue;
+    }
+
     if (isBootstrapVueTag(tag, allowedBootstrapSet, allowedBootstrapPascal)) {
       continue;
     }
