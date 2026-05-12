@@ -585,6 +585,7 @@ func sanitizeFlowDiagram(diagram taskFlowDiagram) (taskFlowDiagram, error) {
 	}
 
 	normalizedEdges := make([]flowDiagramConnection, 0, len(diagram.Edges))
+	primaryBySource := map[string]bool{}
 	for index, edge := range diagram.Edges {
 		edge.Source = strings.TrimSpace(edge.Source)
 		edge.Target = strings.TrimSpace(edge.Target)
@@ -615,6 +616,14 @@ func sanitizeFlowDiagram(diagram taskFlowDiagram) (taskFlowDiagram, error) {
 				return taskFlowDiagram{}, fmt.Errorf("invalid target anchor: %q", targetHandle)
 			}
 			edge.TargetHandle = &targetHandle
+		}
+
+		if edge.IsSubmitPrimary {
+			if primaryBySource[edge.Source] {
+				edge.IsSubmitPrimary = false
+			} else {
+				primaryBySource[edge.Source] = true
+			}
 		}
 
 		normalizedEdges = append(normalizedEdges, edge)
@@ -700,6 +709,15 @@ type generationContext struct {
 	Theme         string   `json:"theme"`
 	EnabledPacks  []string `json:"enabledPacks"`
 	TargetDensity string   `json:"targetDensity"`
+	FlowTasks     []generationFlowTask `json:"flowTasks"`
+}
+
+type generationFlowTask struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Route       string `json:"route"`
+	ScreenID    string `json:"screenId"`
+	IsPopupTask bool   `json:"isPopupTask"`
 }
 
 type generationRequest struct {
@@ -2197,21 +2215,7 @@ func buildInspirationConversionPrompt(context *generationContext) string {
 		defaultInspirationConversionPromptTemplate(),
 	)
 
-	contextLines := make([]string, 0, 6)
-	if context != nil {
-		if strings.TrimSpace(context.Locale) != "" {
-			contextLines = append(contextLines, "Locale: "+strings.TrimSpace(context.Locale)+".")
-		}
-		if strings.TrimSpace(context.Theme) != "" {
-			contextLines = append(contextLines, "Theme: "+strings.TrimSpace(context.Theme)+".")
-		}
-		if strings.TrimSpace(context.TargetDensity) != "" {
-			contextLines = append(contextLines, "Target density: "+strings.TrimSpace(context.TargetDensity)+".")
-		}
-		if len(context.EnabledPacks) > 0 {
-			contextLines = append(contextLines, "Enabled packs: "+strings.Join(context.EnabledPacks, ", ")+".")
-		}
-	}
+	contextLines := buildGenerationContextLines(context, true)
 	contextText := strings.TrimSpace(strings.Join(contextLines, "\n"))
 	if contextText == "" {
 		contextText = "No additional context constraints."
@@ -2609,6 +2613,97 @@ func appendConversationMessagesForResponse(messages []cerebrasChatMessage, assis
 	return history
 }
 
+func buildGenerationContextLines(context *generationContext, includeNavigationBehavior bool) []string {
+	lines := make([]string, 0, 10)
+	if context == nil {
+		return lines
+	}
+
+	if strings.TrimSpace(context.Locale) != "" {
+		lines = append(lines, "Locale: "+strings.TrimSpace(context.Locale)+".")
+	}
+	if strings.TrimSpace(context.Theme) != "" {
+		lines = append(lines, "Theme: "+strings.TrimSpace(context.Theme)+".")
+	}
+	if strings.TrimSpace(context.TargetDensity) != "" {
+		lines = append(lines, "Target density: "+strings.TrimSpace(context.TargetDensity)+".")
+	}
+	if len(context.EnabledPacks) > 0 {
+		lines = append(lines, "Enabled packs: "+strings.Join(context.EnabledPacks, ", "))
+	}
+
+	if includeNavigationBehavior {
+		lines = append(lines, "Navigation behavior:")
+		lines = append(lines, "submit() is the default action for flow navigation.")
+		lines = append(lines, "submit(<taskRouteOrId>) can be used to force an explicit destination when needed.")
+		lines = append(lines, "popup(<taskRouteOrId>) should only be used for popup tasks.")
+	}
+
+	if len(context.FlowTasks) == 0 {
+		lines = append(lines, "No flow tasks are available.")
+		return lines
+	}
+
+	listOfRouteIdAndName := make([]string, 0, len(context.FlowTasks))
+	for _, task := range context.FlowTasks {
+		route := strings.TrimSpace(task.Route)
+		if route == "" && strings.TrimSpace(task.ID) != "" {
+			route = "#/task/" + strings.TrimSpace(task.ID)
+		}
+		if strings.TrimSpace(task.ID) == "" {
+			continue
+		}
+		name := strings.TrimSpace(task.Name)
+		if name == "" {
+			name = "(unnamed)"
+		}
+		if route != "" {
+			listOfRouteIdAndName = append(listOfRouteIdAndName, "id="+strings.TrimSpace(task.ID)+" | name="+name+" | route="+route)
+		} else {
+			listOfRouteIdAndName = append(listOfRouteIdAndName, "id="+strings.TrimSpace(task.ID)+" | name="+name)
+		}
+	}
+
+	lines = append(lines, "Available taskRouteId:")
+	if len(listOfRouteIdAndName) == 0 {
+		lines = append(lines, "No available taskRouteId values.")
+		return lines
+	}
+	for _, entry := range listOfRouteIdAndName {
+		lines = append(lines, "- "+entry)
+	}
+
+	hasPopupTasks := false
+	for _, task := range context.FlowTasks {
+		if task.IsPopupTask {
+			hasPopupTasks = true
+			break
+		}
+	}
+	if hasPopupTasks {
+		lines = append(lines, "Popup tasks:")
+		for _, task := range context.FlowTasks {
+			if !task.IsPopupTask || strings.TrimSpace(task.ID) == "" {
+				continue
+			}
+			route := strings.TrimSpace(task.Route)
+			if route == "" {
+				route = "#/task/" + strings.TrimSpace(task.ID)
+			}
+			name := strings.TrimSpace(task.Name)
+			if name == "" {
+				name = "(sin nombre)"
+			}
+			if route != "" {
+				lines = append(lines, "- id="+strings.TrimSpace(task.ID)+" | name="+name+" | route="+route)
+			} else {
+				lines = append(lines, "- id="+strings.TrimSpace(task.ID)+" | name="+name)
+			}
+		}
+	}
+	return lines
+}
+
 func buildDataGenerationSystemPrompt(input dataGenerationRequest) string {
 	currentData := map[string]interface{}{}
 	if input.CurrentData != nil {
@@ -2629,21 +2724,7 @@ func buildDataGenerationSystemPrompt(input dataGenerationRequest) string {
 
 	template := loadDataGenerationSystemPromptTemplate()
 	parts := []string{template}
-
-	if input.Context != nil {
-		if input.Context.Locale != "" {
-			parts = append(parts, "Locale: "+input.Context.Locale+".")
-		}
-		if input.Context.Theme != "" {
-			parts = append(parts, "Theme: "+input.Context.Theme+".")
-		}
-		if input.Context.TargetDensity != "" {
-			parts = append(parts, "Target density: "+input.Context.TargetDensity+".")
-		}
-		if len(input.Context.EnabledPacks) > 0 {
-			parts = append(parts, "Enabled packs: "+strings.Join(input.Context.EnabledPacks, ", ")+".")
-		}
-	}
+	parts = append(parts, buildGenerationContextLines(input.Context, true)...)
 
 	currentPug := strings.TrimSpace(input.CurrentPug)
 	if currentPug != "" {
@@ -2677,21 +2758,7 @@ func buildPugGenerationSystemPrompt(input pugGenerationRequest) string {
 
 	template := loadPugGenerationSystemPromptTemplate()
 	parts := []string{template}
-
-	if input.Context != nil {
-		if input.Context.Locale != "" {
-			parts = append(parts, "Locale: "+input.Context.Locale+".")
-		}
-		if input.Context.Theme != "" {
-			parts = append(parts, "Theme: "+input.Context.Theme+".")
-		}
-		if input.Context.TargetDensity != "" {
-			parts = append(parts, "Target density: "+input.Context.TargetDensity+".")
-		}
-		if len(input.Context.EnabledPacks) > 0 {
-			parts = append(parts, "Enabled packs: "+strings.Join(input.Context.EnabledPacks, ", ")+".")
-		}
-	}
+	parts = append(parts, buildGenerationContextLines(input.Context, true)...)
 
 	currentPug := strings.TrimSpace(input.CurrentPug)
 	if currentPug != "" {
@@ -2730,21 +2797,7 @@ func normalizeGeneratedPug(raw string) string {
 func buildGenerationSystemPrompt(userPrompt string, ctx *generationContext) string {
 	template := loadGenerationSystemPromptTemplate()
 	parts := []string{template}
-
-	if ctx != nil {
-		if ctx.Locale != "" {
-			parts = append(parts, "Locale: "+ctx.Locale+".")
-		}
-		if ctx.Theme != "" {
-			parts = append(parts, "Theme: "+ctx.Theme+".")
-		}
-		if ctx.TargetDensity != "" {
-			parts = append(parts, "Target density: "+ctx.TargetDensity+".")
-		}
-		if len(ctx.EnabledPacks) > 0 {
-			parts = append(parts, "Enabled packs: "+strings.Join(ctx.EnabledPacks, ", "))
-		}
-	}
+	parts = append(parts, buildGenerationContextLines(ctx, true)...)
 
 	parts = append(parts, "User request: "+strings.TrimSpace(userPrompt))
 

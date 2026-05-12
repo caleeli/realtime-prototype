@@ -21,6 +21,7 @@ export type ComponentLoader = () => Promise<DefineComponent | { default: DefineC
 export interface GenerationRenderOptions {
   app?: App;
   componentLoaders?: Record<string, ComponentLoader>;
+  runtimeContext?: PipelineScreenData;
   styleId?: string;
   silent?: boolean;
 }
@@ -428,12 +429,117 @@ function resolveExpression(expression: string, context: PipelineScreenData): unk
     return numericOrBoolean;
   }
 
+  const functionMatch = numericOrBoolean.match(/^\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(([\s\S]*)\)\s*$/);
+  if (functionMatch) {
+    const fnName = functionMatch[1];
+    const rawArgs = functionMatch[2] ?? '';
+    const maybeFunction = getPathValue(context, fnName);
+    if (typeof maybeFunction === 'function') {
+      const argTemplates = parseFunctionCallArgs(rawArgs);
+      return (...eventArgs: unknown[]) => {
+        const eventContext = { ...context, $event: eventArgs[0] };
+        const args = argTemplates.map((arg) => resolveExpressionArgument(arg, eventContext));
+        try {
+          return maybeFunction(...args);
+        } catch (_error) {
+          return undefined;
+        }
+      };
+    }
+    return undefined;
+  }
+
   const maybePath = getPathValue(context, value);
   if (maybePath !== undefined) {
     return maybePath;
   }
 
   return value;
+}
+
+function resolveExpressionArgument(argument: string, context: PipelineScreenData): unknown {
+  const parsed = parseScalar(argument);
+  if (typeof parsed !== 'string') {
+    return parsed;
+  }
+  const fromPath = getPathValue(context, parsed);
+  if (fromPath !== undefined) {
+    return fromPath;
+  }
+  return parsed;
+}
+
+function parseFunctionCallArgs(rawArgs: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let depth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inTemplate = false;
+  let escape = false;
+
+  const pushArg = () => {
+    const normalized = current.trim();
+    if (normalized) {
+      args.push(normalized);
+    }
+    current = '';
+  };
+
+  for (const char of rawArgs) {
+    if (escape) {
+      current += char;
+      escape = false;
+      continue;
+    }
+
+    if (char === '\\' && (inSingle || inDouble || inTemplate)) {
+      current += char;
+      escape = true;
+      continue;
+    }
+
+    if (char === "'" && !inDouble && !inTemplate) {
+      inSingle = !inSingle;
+      current += char;
+      continue;
+    }
+
+    if (char === '"' && !inSingle && !inTemplate) {
+      inDouble = !inDouble;
+      current += char;
+      continue;
+    }
+
+    if (char === '`' && !inSingle && !inDouble) {
+      inTemplate = !inTemplate;
+      current += char;
+      continue;
+    }
+
+    if (!inSingle && !inDouble && !inTemplate) {
+      if (char === '(') {
+        depth += 1;
+      } else if (char === ')' && depth > 0) {
+        depth -= 1;
+      } else if ((char === '[' || char === '{') && depth >= 0) {
+        depth += 1;
+      } else if ((char === ']' || char === '}') && depth > 0) {
+        depth -= 1;
+      } else if (char === ',' && depth === 0) {
+        pushArg();
+        continue;
+      }
+    }
+
+    current += char;
+  }
+
+  if (current.trim().length > 0) {
+    args.push(current.trim());
+  }
+
+  return args;
 }
 
 function interpolateText(text: string, context: PipelineScreenData): string {
@@ -852,11 +958,13 @@ function isPugTreeEmpty(tree: GenerationPipelineResult['template']): boolean {
 export class GenerationRenderService {
   private readonly app: App | undefined;
   private readonly componentLoaders: Record<string, ComponentLoader>;
+  private readonly runtimeContext: PipelineScreenData;
   private readonly styleId: string;
 
   constructor(options: GenerationRenderOptions = {}) {
     this.app = options.app;
     this.componentLoaders = options.componentLoaders ?? {};
+    this.runtimeContext = options.runtimeContext ? { ...(options.runtimeContext as PipelineScreenData) } : {};
     this.styleId = toStyleId(options.styleId ?? DEFAULT_STYLE_ID);
   }
 
@@ -912,7 +1020,7 @@ export class GenerationRenderService {
     }
 
     const registry = await this.buildComponentRegistry(output.imports);
-    const context = (output.data ?? {}) as PipelineScreenData;
+    const context = { ...(output.data ?? {}), ...(this.runtimeContext ?? {}) } as PipelineScreenData;
     const bootstrapRegistry = buildBootstrapComponentRegistry(output.metadata.usedTags);
     if (import.meta.env.DEV) {
       console.debug('[GeneratedScreen][bootstrap-registry]', Object.keys(bootstrapRegistry));

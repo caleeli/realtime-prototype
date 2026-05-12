@@ -7,6 +7,12 @@ export interface GenerationContext {
   theme?: string;
   enabledPacks?: string[];
   targetDensity?: string;
+  flowTasks?: Array<{
+    id: string;
+    name: string;
+    route: string;
+    isPopupTask: boolean;
+  }>;
 }
 
 export interface GenerationMessage {

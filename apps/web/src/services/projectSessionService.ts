@@ -23,6 +23,8 @@ export type FlowTaskNode = {
   name: string;
   screenId: string;
   position: FlowTaskPosition;
+  isPopupTask?: boolean;
+  isStartTask?: boolean;
 };
 
 export type FlowDiagramConnection = {
@@ -31,6 +33,7 @@ export type FlowDiagramConnection = {
   target: string;
   sourceHandle?: string | null;
   targetHandle?: string | null;
+  isSubmitPrimary?: boolean;
 };
 
 export type TaskFlowDiagram = {

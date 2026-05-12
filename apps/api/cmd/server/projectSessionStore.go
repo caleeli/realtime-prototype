@@ -45,15 +45,17 @@ type flowDiagramTask struct {
 	ID       string          `json:"id"`
 	Name     string          `json:"name"`
 	ScreenID string          `json:"screenId"`
+	IsPopup  bool            `json:"isPopupTask"`
 	Position flowTaskPosition `json:"position"`
 }
 
 type flowDiagramConnection struct {
-	ID           string  `json:"id"`
-	Source       string  `json:"source"`
-	Target       string  `json:"target"`
-	SourceHandle *string `json:"sourceHandle"`
-	TargetHandle *string `json:"targetHandle"`
+	ID              string  `json:"id"`
+	Source          string  `json:"source"`
+	Target          string  `json:"target"`
+	SourceHandle    *string `json:"sourceHandle"`
+	TargetHandle    *string `json:"targetHandle"`
+	IsSubmitPrimary bool    `json:"isSubmitPrimary"`
 }
 
 type taskFlowDiagram struct {

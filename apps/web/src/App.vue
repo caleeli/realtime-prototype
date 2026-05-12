@@ -126,6 +126,8 @@ type FlowTask = {
   id: string;
   title: string;
   screenId: string;
+  isPopupTask?: boolean;
+  isStartTask?: boolean;
 };
 
 type FlowConnection = {
@@ -141,6 +143,7 @@ type FlowEdge = {
   target: string;
   sourceHandle?: string | null;
   targetHandle?: string | null;
+  isSubmitPrimary?: boolean;
   style?: Record<string, string | number>;
 };
 
@@ -155,7 +158,15 @@ type FlowNode = {
     taskId: string;
     title: string;
     screenId: string;
+    isPopupTask?: boolean;
   };
+};
+
+type FlowTaskPromptNavigation = {
+  id: string;
+  name: string;
+  route: string;
+  isPopupTask: boolean;
 };
 
 type FlowTaskPreviewState = {
@@ -177,6 +188,24 @@ const didUseInspiration = ref(false);
 const message = ref('Escribe una descripción y pulsa "Generar pantalla".');
 const generatedState: Ref<GeneratedViewState | null> = ref(null);
 const generatedComponent: Ref<Component | null> = ref(null);
+type PopupRuntimeState = {
+  isOpen: boolean;
+  screenId: string;
+  title: string;
+  component: Component | null;
+  isLoading: boolean;
+  error: string;
+  cleanup: (() => void) | null;
+};
+const popupState = ref<PopupRuntimeState>({
+  isOpen: false,
+  screenId: '',
+  title: '',
+  component: null,
+  isLoading: false,
+  error: '',
+  cleanup: null,
+});
 const uxEvaluations: Ref<UXEvaluatorResultLine[]> = ref([]);
 const screens = ref<SessionScreenSummary[]>([]);
 const activeScreenId = ref('');
@@ -212,11 +241,12 @@ const cssGenerationError = ref('');
 const cssGenerationHistory = ref<CssGenerationHistoryEntry[]>([]);
 const cssGenerationRedoStack = ref<string[]>([]);
 const cssGenerationConversation = ref<GenerationMessage[]>([]);
-type PrimaryNav = 'builder' | 'flows' | 'components' | 'library' | 'settings';
+type PrimaryNav = 'builder' | 'flows' | 'execution' | 'components' | 'library' | 'settings';
 type EditorWorkspaceTab = 'canvas' | 'data' | 'pug' | 'css' | 'states';
 type FlowWorkspaceTab = 'canvas' | 'data' | 'states';
 
 const primaryNav = ref<PrimaryNav>('builder');
+const executionSubmitInterceptor = ref<((event: Event) => void) | null>(null);
 const railCollapsed = ref(true);
 const editorWorkspaceTab = ref<EditorWorkspaceTab>('canvas');
 const flowWorkspaceTab = ref<FlowWorkspaceTab>('canvas');
@@ -236,6 +266,8 @@ const uxEvaluationStatus = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
 const uxEvaluationMessage = ref('');
 const cleanupStyle = ref<(() => void) | null>(null);
 const screenRevision = ref(0);
+const isProcessingHashNavigation = ref(false);
+const popupRuntimeCounter = ref(0);
 const BOOTSWATCH_VERSION = '5.3.8';
 const BOOTSWATCH_LINK_ID = 'bootswatch-theme-runtime';
 const FLOW_DIAGRAM_AUTO_SAVE_MS = 500;
@@ -288,8 +320,43 @@ const activeScreenLabel = computed(() => {
   const match = screens.value.find((screen) => screen.id === activeScreenId.value);
   return match?.name ?? 'Sin pantalla';
 });
+const executionCurrentTask = computed(() => {
+  if (primaryNav.value !== 'execution') {
+    return null;
+  }
+
+  const currentScreenId = activeScreenId.value.trim();
+  if (!currentScreenId) {
+    return null;
+  }
+
+  return flowTasks.value.find((task) => task.screenId === currentScreenId) ?? null;
+});
+const executionStartTask = computed(() => {
+  const tasksWithScreen = flowTasks.value.filter((task) => task.screenId?.trim());
+  return getFlowStartTask(tasksWithScreen);
+});
+const executionCurrentTaskLabel = computed(() => {
+  if (!executionCurrentTask.value) {
+    return 'Tarea activa: sin tarea';
+  }
+
+  const taskIndex = flowTasks.value.findIndex((task) => task.id === executionCurrentTask.value?.id);
+  const taskName = executionCurrentTask.value.title || `Tarea ${taskIndex + 1}`;
+  return `Tarea activa: ${taskName}`;
+});
+const executionStartTaskLabel = computed(() => {
+  if (!executionStartTask.value) {
+    return '';
+  }
+
+  const taskIndex = flowTasks.value.findIndex((task) => task.id === executionStartTask.value?.id);
+  const taskName = executionStartTask.value.title || `Tarea ${taskIndex + 1}`;
+  return `Primera tarea: ${taskName}`;
+});
 
 const browserLocale = computed(() => (typeof navigator !== 'undefined' ? navigator.language : '—'));
+const selectedFlowEdge = computed(() => flowEdges.value.find((edge) => edge.id === selectedFlowEdgeId.value) ?? null);
 
 const FLOW_COLUMNS = 3;
 const FLOW_COLUMN_GAP = 340;
@@ -396,6 +463,27 @@ function getFlowTaskBaseLabel(index = 1): string {
   return `Tarea ${index}`;
 }
 
+function getFlowStartTask(allTasks: FlowTask[] = flowTasks.value): FlowTask | null {
+  if (allTasks.length === 0) {
+    return null;
+  }
+
+  const explicitStart = allTasks.find((task) => task.isStartTask === true);
+  return explicitStart ?? allTasks[0];
+}
+
+function normalizeFlowTaskStartFlags(allTasks: FlowTask[]): FlowTask[] {
+  if (allTasks.length === 0) {
+    return [];
+  }
+
+  const startTaskId = allTasks.find((task) => task.isStartTask === true)?.id || allTasks[0].id;
+  return allTasks.map((task) => ({
+    ...task,
+    isStartTask: task.id === startTaskId,
+  }));
+}
+
 function buildFlowNodePosition(index: number) {
   const col = index % FLOW_COLUMNS;
   const row = Math.floor(index / FLOW_COLUMNS);
@@ -435,6 +523,8 @@ function buildTaskFlowDiagramFromState(): TaskFlowDiagram {
       id: task.id,
       name: (task.title || getFlowTaskBaseLabel(index + 1)).trim(),
       screenId: task.screenId.trim(),
+      isPopupTask: task.isPopupTask === true,
+      isStartTask: task.isStartTask === true,
       position: {
         x: nodePosition?.x ?? buildFlowNodePosition(index).x,
         y: nodePosition?.y ?? buildFlowNodePosition(index).y,
@@ -448,6 +538,7 @@ function buildTaskFlowDiagramFromState(): TaskFlowDiagram {
     target: edge.target,
     sourceHandle: sanitizeFlowDiagramHandle(edge.sourceHandle),
     targetHandle: sanitizeFlowDiagramHandle(edge.targetHandle),
+    isSubmitPrimary: edge.isSubmitPrimary === true,
   }));
 
   for (const task of tasks) {
@@ -522,6 +613,8 @@ function applyFlowDiagram(diagram: TaskFlowDiagram) {
       id,
       title: entry.name?.trim() || getFlowTaskBaseLabel(normalizedTasks.length + 1),
       screenId: validScreenIDs.has((entry.screenId || '').trim()) ? entry.screenId.trim() : '',
+      isPopupTask: entry.isPopupTask === true,
+      isStartTask: entry.isStartTask === true,
     });
   }
 
@@ -533,6 +626,8 @@ function applyFlowDiagram(diagram: TaskFlowDiagram) {
           id: getFlowTaskId(),
           title: screen.name,
           screenId: screen.id,
+          isPopupTask: false,
+          isStartTask: false,
         });
       }
     }
@@ -562,7 +657,10 @@ function applyFlowDiagram(diagram: TaskFlowDiagram) {
   flowTasks.value = normalizedTasks.map((task, index) => ({
     ...task,
     title: task.title || getFlowTaskBaseLabel(index + 1),
+    isPopupTask: task.isPopupTask === true,
+    isStartTask: task.isStartTask === true,
   }));
+  flowTasks.value = normalizeFlowTaskStartFlags(flowTasks.value);
 
   const validTaskIds = new Set(flowTasks.value.map((task) => task.id));
   const normalizedEdges = (diagram.edges || [])
@@ -581,6 +679,7 @@ function applyFlowDiagram(diagram: TaskFlowDiagram) {
         target,
         sourceHandle: sanitizeFlowDiagramHandle(edge.sourceHandle),
         targetHandle: sanitizeFlowDiagramHandle(edge.targetHandle),
+        isSubmitPrimary: edge.isSubmitPrimary === true,
       } as FlowEdge;
     })
     .filter((edge): edge is FlowEdge => edge !== null);
@@ -601,6 +700,7 @@ function applyFlowDiagram(diagram: TaskFlowDiagram) {
         taskId: task.id,
         title: task.title,
         screenId: task.screenId,
+        isPopupTask: task.isPopupTask === true,
       },
     };
   });
@@ -656,7 +756,7 @@ function removeFlowTaskById(taskId: string) {
   );
   selectedFlowEdgeId.value = '';
   syncFlowEdgeSelectionStyle();
-  flowTasks.value = nextTasks;
+  flowTasks.value = normalizeFlowTaskStartFlags(nextTasks);
 }
 
 function buildFlowTaskDefaults(screenId = ''): FlowTask {
@@ -665,7 +765,34 @@ function buildFlowTaskDefaults(screenId = ''): FlowTask {
     id: getFlowTaskId(),
     title: nextLabel,
     screenId,
+    isPopupTask: false,
+    isStartTask: flowTasks.value.length === 0,
   };
+}
+
+function toggleFlowTaskPopupType(taskId: string) {
+  flowTasks.value = flowTasks.value.map((task) =>
+    task.id === taskId ? { ...task, isPopupTask: !task.isPopupTask } : task,
+  );
+  flowNodes.value = flowNodes.value.map((node) =>
+    node.id === taskId
+      ? {
+          ...node,
+          data: {
+            ...node.data,
+            isPopupTask: !Boolean(node.data.isPopupTask),
+          },
+        }
+      : node,
+  );
+}
+
+function setFlowTaskAsStart(taskId: string) {
+  flowTasks.value = flowTasks.value.map((task) => ({
+    ...task,
+    isStartTask: task.id === taskId,
+  }));
+  message.value = `Tarea inicial establecida: ${flowTasks.value.find((task) => task.id === taskId)?.title || 'tarea seleccionada'}.`;
 }
 
 function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.value) {
@@ -685,12 +812,16 @@ function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.val
       id: getFlowTaskId(),
       title: `${screen.name}`,
       screenId: screen.id,
+      isPopupTask: false,
+      isStartTask: false,
     }));
+    flowTasks.value = normalizeFlowTaskStartFlags(flowTasks.value);
   } else {
     flowTasks.value = flowTasks.value.filter((task) => !task.screenId || validIds.has(task.screenId));
     flowTasks.value = flowTasks.value.map((task, index) => ({
       ...task,
       title: task.title || getFlowTaskBaseLabel(index + 1),
+      isStartTask: task.isStartTask ?? false,
     }));
     const currentIds = new Set(flowTasks.value.map((task) => task.screenId));
     for (const screen of screenList) {
@@ -701,6 +832,8 @@ function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.val
       }
     }
   }
+
+  flowTasks.value = normalizeFlowTaskStartFlags(flowTasks.value);
 
   if (screenList.length > 0 && activeScreenId.value) {
     const activeTaskIndex = flowTasks.value.findIndex((task) => task.screenId === activeScreenId.value);
@@ -743,6 +876,7 @@ function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.val
         taskId: task.id,
         title: task.title,
         screenId: task.screenId,
+        isPopupTask: task.isPopupTask === true,
       },
     };
   });
@@ -808,6 +942,7 @@ async function ensureFlowTaskPreview(taskId: string, screenId: string) {
     const rendered = await buildGeneratedScreen(pipelineOutput, {
       componentLoaders,
       styleId: `flow-screen-${taskId}`,
+      runtimeContext: createFlowPreviewRuntimeContext(),
     });
     const rawCleanup = rendered.installStyles();
     flowTaskPreviews.value = {
@@ -847,6 +982,7 @@ function addFlowTask() {
         taskId: task.id,
         title: task.title,
         screenId: task.screenId,
+        isPopupTask: task.isPopupTask === true,
       },
     },
   ];
@@ -869,6 +1005,7 @@ function setFlowTaskTitle(taskId: string, title: string) {
             ...node.data,
             taskId: taskId,
             title,
+            isPopupTask: node.data.isPopupTask,
           },
         }
       : node,
@@ -889,6 +1026,7 @@ function onFlowTaskScreenChange(taskId: string, event: Event) {
             taskId,
             title: node.data.title,
             screenId: selectedScreenId,
+            isPopupTask: node.data.isPopupTask,
           },
         }
       : node,
@@ -925,6 +1063,7 @@ function onFlowConnect(connection: FlowConnection) {
       target: connection.target,
       sourceHandle,
       targetHandle,
+      isSubmitPrimary: false,
     },
   ];
   selectedFlowEdgeId.value = '';
@@ -933,17 +1072,40 @@ function onFlowConnect(connection: FlowConnection) {
 
 function buildFlowEdgeStyle(edgeId: string) {
   const isSelected = selectedFlowEdgeId.value === edgeId;
+  const edge = flowEdges.value.find((entry) => entry.id === edgeId);
+  const isPrimary = edge?.isSubmitPrimary === true;
   return isSelected
     ? {
         stroke: 'var(--rp-primary-hover)',
-        strokeWidth: 3,
+        strokeWidth: isPrimary ? 5 : 3,
         markerEnd: 'url(#rp-task-flow-arrow)',
       }
     : {
-        stroke: 'var(--rp-primary)',
-        strokeWidth: 2,
+        stroke: isPrimary ? 'var(--rp-primary)' : 'var(--rp-primary)',
+        strokeWidth: isPrimary ? 4 : 2,
         markerEnd: 'url(#rp-task-flow-arrow)',
       };
+}
+
+function setSelectedFlowEdgeSubmitPrimary() {
+  if (!selectedFlowEdge.value) {
+    return;
+  }
+
+  const shouldPromote = !selectedFlowEdge.value.isSubmitPrimary;
+  const sourceTaskId = selectedFlowEdge.value.source;
+  const selectedEdgeId = selectedFlowEdge.value.id;
+
+  flowEdges.value = flowEdges.value.map((edge) => {
+    if (edge.id === selectedEdgeId) {
+      return { ...edge, isSubmitPrimary: shouldPromote };
+    }
+    if (edge.source === sourceTaskId) {
+      return { ...edge, isSubmitPrimary: false };
+    }
+    return edge;
+  });
+  syncFlowEdgeSelectionStyle();
 }
 
 function syncFlowEdgeSelectionStyle() {
@@ -1000,7 +1162,25 @@ function navigateToBuilder() {
   primaryNav.value = 'builder';
 }
 
-function navigateToPlaceholderNav(nav: Exclude<PrimaryNav, 'builder' | 'flows'>) {
+function getExecutionStartScreenId(): string {
+  const firstTask = getFlowStartTask(flowTasks.value.filter((task) => task.screenId?.trim()));
+  return firstTask?.screenId?.trim() ?? '';
+}
+
+async function navigateToExecution() {
+  syncFlowTasksToScreens(screens.value);
+  primaryNav.value = 'execution';
+  const startScreenId = getExecutionStartScreenId();
+  if (!startScreenId) {
+    message.value = flowTasks.value.length
+      ? 'La primera tarea no tiene pantalla asociada para iniciar la ejecución.'
+      : 'No hay tareas en el flujo para ejecutar.';
+    return;
+  }
+  await openScreen(startScreenId, { force: true });
+}
+
+function navigateToPlaceholderNav(nav: Exclude<PrimaryNav, 'builder' | 'flows' | 'execution'>) {
   primaryNav.value = nav;
 }
 
@@ -1010,8 +1190,7 @@ function navigateToFlows() {
 }
 
 function onTopbarPlay() {
-  navigateToBuilder();
-  focusPromptTextarea();
+  void navigateToExecution();
 }
 
 function onExportClick() {
@@ -1068,12 +1247,35 @@ async function focusFlowTask(taskId: string) {
 }
 
 function buildPugGenerationContext() {
+  return buildGenerationContextForAI();
+}
+
+function buildGenerationContextForAI() {
+  const flowContext = buildFlowTaskPromptNavigationContext();
   return {
     locale: navigator.language || 'es-ES',
     theme: activeTheme.value,
     targetDensity: 'compact',
     enabledPacks: ['advanced-inputs', 'files', 'charts'],
+    flowTasks: flowContext.length > 0 ? flowContext : undefined,
   };
+}
+
+function buildFlowTaskPromptNavigationContext(): FlowTaskPromptNavigation[] {
+  return flowTasks.value
+    .map((task) => {
+      if (!task.screenId || !task.title) {
+        return null;
+      }
+      const route = buildTaskHashForTask(task);
+      return {
+        id: task.id,
+        name: task.title,
+        route,
+        isPopupTask: task.isPopupTask === true,
+      };
+    })
+    .filter((entry): entry is FlowTaskPromptNavigation => entry !== null);
 }
 
 function resetPugEditorDraft() {
@@ -1134,6 +1336,7 @@ async function applyDataToCurrentOutput(parsedData: unknown) {
   const renderedView = await buildGeneratedScreen(updatedOutput, {
     componentLoaders,
     styleId: nextStyleId,
+    runtimeContext: createRuntimeContext(),
   });
 
   cleanupStyle.value = renderedView.installStyles;
@@ -1168,6 +1371,7 @@ async function applyCssToCurrentOutput(css: string) {
   const renderedView = await buildGeneratedScreen(updatedOutput, {
     componentLoaders,
     styleId: nextStyleId,
+    runtimeContext: createRuntimeContext(),
   });
 
   cleanupStyle.value = renderedView.installStyles;
@@ -1233,6 +1437,7 @@ async function applyPugToCurrentOutput(pugTemplate: string) {
   const renderedView = await buildGeneratedScreen(pipelineOutput, {
     componentLoaders,
     styleId: nextStyleId,
+    runtimeContext: createRuntimeContext(),
   });
 
   cleanupStyle.value = renderedView.installStyles;
@@ -1439,10 +1644,15 @@ watch(activeTheme, async (theme) => {
 
 onMounted(async () => {
   window.addEventListener('keydown', isThemeHotkey);
+  window.addEventListener('hashchange', onHashChange);
   try {
     isHydratingSession.value = true;
     await restoreLastSession();
     await hydrateFlowDiagramFromSession();
+    const hashScreenId = resolveScreenIdFromHashValue(window.location.hash);
+    if (hashScreenId && hashScreenId !== activeScreenId.value) {
+      await onHashChange();
+    }
   } catch (_error) {
     message.value = 'No se pudo cargar la última sesión.';
     try {
@@ -1514,12 +1724,7 @@ function syncConversationFromBackend(messages: GenerationMessage[]) {
 }
 
 function buildDataGenerationContext() {
-  return {
-    locale: navigator.language || 'es-ES',
-    theme: activeTheme.value,
-    targetDensity: 'compact',
-    enabledPacks: ['advanced-inputs', 'files', 'charts'],
-  };
+  return buildGenerationContextForAI();
 }
 
 function popRedoInstruction(): string {
@@ -1586,6 +1791,7 @@ async function hydrateFromSessionState(state: SessionScreenState | null) {
   const renderedView = await buildGeneratedScreen(pipelineOutput, {
     componentLoaders,
     styleId: `pipeline-runtime-restored-${screenRevision.value + 1}`,
+    runtimeContext: createRuntimeContext(),
   });
 
   if (cleanupStyle.value) {
@@ -1620,6 +1826,401 @@ async function refreshScreensFromSession() {
   return session;
 }
 
+function resolveScreenIdFromHashValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const withoutHash = trimmed.startsWith('#') ? trimmed.slice(1) : trimmed;
+  const base = withoutHash.split('?')[0]?.replace(/^\/+/, '') ?? '';
+  const normalized = base.trim();
+
+  const taskMatch = normalized.match(/^task\/([^/]+)(?:\/.*)?$/i);
+  if (taskMatch?.[1]) {
+    const safeTaskId = decodeURIComponentSafe(taskMatch[1]);
+    const targetTask = flowTasks.value.find((task) => task.id === safeTaskId);
+    if (targetTask?.screenId) {
+      return targetTask.screenId;
+    }
+  }
+
+  const match = normalized.match(/^screen\/(.+)$/i);
+  const candidate = (match?.[1] || normalized).trim();
+  if (!candidate) {
+    return '';
+  }
+
+  const safeCandidate = decodeURIComponentSafe(candidate);
+  if (isKnownScreenId(safeCandidate)) {
+    return safeCandidate;
+  }
+
+  const byName = screens.value.find((screen) => screen.name.toLowerCase() === safeCandidate.toLowerCase());
+  return byName?.id ?? '';
+}
+
+function resolveTaskIdFromHashValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const withoutHash = trimmed.startsWith('#') ? trimmed.slice(1) : trimmed;
+  const base = withoutHash.split('?')[0]?.replace(/^\/+/, '') ?? '';
+  const normalized = base.trim();
+  const taskMatch = normalized.match(/^task\/([^/]+)(?:\/.*)?$/i);
+  if (!taskMatch?.[1]) {
+    return '';
+  }
+  const safeTaskId = decodeURIComponentSafe(taskMatch[1]);
+  return flowTasks.value.some((task) => task.id === safeTaskId) ? safeTaskId : '';
+}
+
+function buildTaskRouteSlug(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/gi, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function buildTaskHashForTask(task: FlowTask | null | undefined): string {
+  if (!task) {
+    return '#/task/';
+  }
+  const routeTaskId = encodeURIComponent(task.id.trim());
+  const slug = buildTaskRouteSlug(task.title);
+  return slug ? `#/task/${routeTaskId}/${encodeURIComponent(slug)}` : `#/task/${routeTaskId}`;
+}
+
+function isKnownTaskId(taskId: string): boolean {
+  return flowTasks.value.some((task) => task.id === taskId);
+}
+
+function resolveTaskIdFromRouteReference(rawReference?: string): string {
+  const trimmed = (rawReference ?? '').trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const fromHash = resolveTaskIdFromHashValue(trimmed);
+  if (fromHash) {
+    return fromHash;
+  }
+
+  const safeCandidate = decodeURIComponentSafe(trimmed);
+  if (isKnownTaskId(safeCandidate)) {
+    return safeCandidate;
+  }
+
+  const byName = flowTasks.value.find((task) => task.title.toLowerCase() === safeCandidate.toLowerCase());
+  if (byName) {
+    return byName.id;
+  }
+
+  const bySlug = flowTasks.value.find((task) => buildTaskRouteSlug(task.title) === buildTaskRouteSlug(safeCandidate));
+  if (bySlug) {
+    return bySlug.id;
+  }
+
+  const screenMatch = resolveScreenIdFromHashValue(trimmed);
+  if (!screenMatch) {
+    return '';
+  }
+
+  return flowTasks.value.find((task) => task.screenId === screenMatch)?.id ?? '';
+}
+
+function decodeURIComponentSafe(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch (_error) {
+    return raw;
+  }
+}
+
+function buildScreenHash(screenId: string): string {
+  const task = flowTasks.value.find((item) => item.screenId === screenId);
+  if (task) {
+    return buildTaskHashForTask(task);
+  }
+  return `#/screen/${encodeURIComponent(screenId)}`;
+}
+
+function isKnownScreenId(screenId: string): boolean {
+  return screens.value.some((screen) => screen.id === screenId);
+}
+
+function resolveScreenIdFromRouteReference(rawReference?: string): string {
+  const trimmed = (rawReference ?? '').trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const fromTaskId = resolveTaskIdFromRouteReference(trimmed);
+  if (fromTaskId) {
+    return flowTasks.value.find((task) => task.id === fromTaskId)?.screenId ?? '';
+  }
+
+  const fromHash = resolveScreenIdFromHashValue(trimmed);
+  if (fromHash) {
+    return fromHash;
+  }
+  if (isKnownScreenId(trimmed)) {
+    return trimmed;
+  }
+
+  const byName = screens.value.find((screen) => screen.name.toLowerCase() === trimmed.toLowerCase());
+  return byName?.id ?? '';
+}
+
+function syncBrowserHashForScreen(screenId: string) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const hash = buildScreenHash(screenId);
+  if (window.location.hash === hash) {
+    return;
+  }
+  isProcessingHashNavigation.value = true;
+  window.location.hash = hash;
+  window.setTimeout(() => {
+    if (isProcessingHashNavigation.value) {
+      isProcessingHashNavigation.value = false;
+    }
+  }, 500);
+}
+
+function getCurrentFlowTaskForScreen(screenId: string): FlowTask | null {
+  return flowTasks.value.find((task) => task.screenId === screenId) ?? null;
+}
+
+function resolveSubmitTargetScreenId(sourceScreenId: string, routeOverride?: string): string {
+  const sourceTask = getCurrentFlowTaskForScreen(sourceScreenId);
+  if (!sourceTask) {
+    return '';
+  }
+
+  const outgoing = flowEdges.value.filter((edge) => edge.source === sourceTask.id);
+  if (outgoing.length === 0) {
+    return '';
+  }
+
+  if (routeOverride) {
+    const explicitTaskId = resolveTaskIdFromRouteReference(routeOverride);
+    if (explicitTaskId) {
+      const explicitEdge = outgoing.find((edge) => edge.target === explicitTaskId);
+      if (explicitEdge) {
+        const explicitTargetTask = flowTasks.value.find((task) => task.id === explicitEdge.target);
+        return explicitTargetTask?.screenId ?? '';
+      }
+    }
+    const explicitScreenId = resolveScreenIdFromRouteReference(routeOverride);
+    if (isKnownScreenId(explicitScreenId)) {
+      return explicitScreenId;
+    }
+  }
+
+  const primary = outgoing.find((edge) => edge.isSubmitPrimary === true) ?? outgoing[0];
+  const targetTask = flowTasks.value.find((task) => task.id === primary?.target);
+  return targetTask?.screenId ?? '';
+}
+
+async function submitCurrentScreen(routeOrScreenId?: string): Promise<void> {
+  const currentScreenId = activeScreenId.value.trim();
+  if (!currentScreenId) {
+    message.value = 'No hay pantalla activa para ejecutar submit().';
+    return;
+  }
+
+  const nextScreenId = resolveSubmitTargetScreenId(currentScreenId, routeOrScreenId);
+  if (!nextScreenId) {
+    message.value = 'No se encontró destino para submit(). Verifica conexiones en flujo.';
+    return;
+  }
+  await openScreen(nextScreenId, { force: true });
+}
+
+async function openPopupScreen(routeOrScreenId?: string): Promise<void> {
+  const targetScreenId = resolveScreenIdFromRouteReference(routeOrScreenId);
+  if (!targetScreenId) {
+    closePopupScreen();
+    popupState.value = {
+      isOpen: true,
+      screenId: '',
+      title: 'Popup',
+      component: null,
+      isLoading: false,
+      error: 'No se encontró la pantalla para abrir como popup.',
+      cleanup: null,
+    };
+    return;
+  }
+
+  if (popupState.value.cleanup) {
+    popupState.value.cleanup();
+  }
+
+  popupRuntimeCounter.value += 1;
+  const requestId = popupRuntimeCounter.value;
+
+  popupState.value = {
+    isOpen: true,
+    screenId: targetScreenId,
+    title: screens.value.find((screen) => screen.id === targetScreenId)?.name || targetScreenId,
+    component: null,
+    isLoading: true,
+    error: '',
+    cleanup: null,
+  };
+
+  try {
+    const state = await sessionService.loadLatestState(targetScreenId);
+    if (requestId !== popupRuntimeCounter.value) {
+      return;
+    }
+    if (!state) {
+      popupState.value = {
+        ...popupState.value,
+        isLoading: false,
+        error: 'La pantalla no tiene versión guardada para mostrar.',
+      };
+      return;
+    }
+
+    const pipelineOutput = await pipelineService.renderFromStoredState({
+      pug: state.screenPayload.sourcePug || '',
+      css: state.screenPayload.css || '',
+      data: state.screenPayload.data,
+      messages: state.screenPayload.messages,
+    });
+
+    const rendered = await buildGeneratedScreen(pipelineOutput, {
+      componentLoaders,
+      styleId: `popup-screen-${targetScreenId}`,
+      runtimeContext: {
+        submit: submitCurrentScreen,
+        popup: openPopupScreen,
+      },
+    });
+
+    if (requestId !== popupRuntimeCounter.value) {
+      const cleanup = rendered.installStyles();
+      cleanup();
+      return;
+    }
+
+    if (popupState.value.cleanup) {
+      popupState.value.cleanup();
+    }
+    const cleanup = rendered.installStyles();
+    popupState.value = {
+      ...popupState.value,
+      isLoading: false,
+      component: markRaw(rendered.component),
+      error: '',
+      cleanup,
+    };
+  } catch (_error) {
+    popupState.value = {
+      ...popupState.value,
+      isLoading: false,
+      error: 'No se pudo renderizar la pantalla del popup.',
+      component: null,
+    };
+  }
+}
+
+function closePopupScreen() {
+  if (popupState.value.cleanup) {
+    popupState.value.cleanup();
+  }
+  popupState.value = {
+    isOpen: false,
+    screenId: '',
+    title: '',
+    component: null,
+    isLoading: false,
+    error: '',
+    cleanup: null,
+  };
+}
+
+async function onHashChange() {
+  if (isProcessingHashNavigation.value) {
+    isProcessingHashNavigation.value = false;
+    return;
+  }
+
+  const screenId = resolveScreenIdFromHashValue(window.location.hash);
+  if (!screenId || screenId === activeScreenId.value) {
+    return;
+  }
+  if (!isKnownScreenId(screenId)) {
+    message.value = 'Pantalla no encontrada para este identificador de hash.';
+    return;
+  }
+
+  await openScreen(screenId, { force: true });
+}
+
+function createRuntimeContext() {
+  return {
+    submit: submitCurrentScreen,
+    popup: openPopupScreen,
+  };
+}
+
+function createFlowPreviewRuntimeContext() {
+  const noop = () => {
+    message.value = 'Acciones de navegación no disponibles en vista previa de flujo.';
+  };
+  return {
+    submit: noop,
+    popup: noop,
+  };
+}
+
+function onExecutionSubmitCapture(event: Event) {
+  if (primaryNav.value !== 'execution') {
+    return;
+  }
+  if (event.defaultPrevented) {
+    return;
+  }
+  if (!(event.target instanceof HTMLFormElement)) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  const routeOrScreenId = event.target.getAttribute('action')?.trim() || undefined;
+  void submitCurrentScreen(routeOrScreenId);
+}
+
+function attachExecutionSubmitInterceptor() {
+  if (executionSubmitInterceptor.value || typeof document === 'undefined') {
+    return;
+  }
+
+  const handler = (event: Event) => onExecutionSubmitCapture(event);
+  document.addEventListener('submit', handler, true);
+  executionSubmitInterceptor.value = handler;
+}
+
+function detachExecutionSubmitInterceptor() {
+  if (!executionSubmitInterceptor.value || typeof document === 'undefined') {
+    return;
+  }
+
+  document.removeEventListener('submit', executionSubmitInterceptor.value, true);
+  executionSubmitInterceptor.value = null;
+}
+
 type OpenScreenOptions = { force?: boolean };
 
 async function openScreen(screenId: string, options: OpenScreenOptions = {}) {
@@ -1631,6 +2232,11 @@ async function openScreen(screenId: string, options: OpenScreenOptions = {}) {
   isSessionLoading.value = true;
   try {
     resetForEmptyScreen('Cargando pantalla...');
+    closePopupScreen();
+    if (!isKnownScreenId(trimmed)) {
+      message.value = 'Pantalla no encontrada. No se pudo abrir.';
+      return;
+    }
     await sessionService.activateScreen(trimmed);
     activeScreenId.value = trimmed;
     const state = await sessionService.loadLatestState(trimmed);
@@ -1640,6 +2246,7 @@ async function openScreen(screenId: string, options: OpenScreenOptions = {}) {
     isScreenDirty.value = state === null && screens.value.find((screen) => screen.id === trimmed)?.lastRevision === 0;
     activeScreenId.value = trimmed;
     syncFlowTasksToScreens(screens.value);
+    syncBrowserHashForScreen(trimmed);
   } finally {
     isSessionLoading.value = false;
   }
@@ -1652,6 +2259,7 @@ async function restoreLastSession() {
     if (session.activeScreenId) {
       activeScreenId.value = session.activeScreenId;
       await hydrateFromSessionState(session.activeState);
+      syncBrowserHashForScreen(session.activeScreenId);
     } else if (screens.value.length > 0) {
       await openScreen(screens.value[0]?.id ?? '');
     } else {
@@ -1847,12 +2455,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
 
   const payload: InspirationRequest = {
     prompt,
-    context: {
-      locale: navigator.language || 'es-ES',
-      theme: activeTheme.value,
-      targetDensity: 'compact',
-      enabledPacks: ['advanced-inputs', 'files', 'charts'],
-    },
+    context: buildGenerationContextForAI(),
     messages: buildUserPayloadMessages(history),
   };
 
@@ -1895,6 +2498,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
     const renderedView = await buildGeneratedScreen(pipelineOutput, {
       componentLoaders,
       styleId: nextStyleId,
+      runtimeContext: createRuntimeContext(),
     });
 
     cleanupStyle.value = renderedView.installStyles;
@@ -2131,12 +2735,7 @@ async function rollbackDataGeneration() {
 }
 
 function buildCssGenerationContext() {
-  return {
-    locale: navigator.language || 'es-ES',
-    theme: activeTheme.value,
-    targetDensity: 'compact',
-    enabledPacks: ['advanced-inputs', 'files', 'charts'],
-  };
+  return buildGenerationContextForAI();
 }
 
 function canGenerateCssWithAI(): boolean {
@@ -2458,10 +3057,15 @@ function toggleBuilderPanelMinimized() {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', isThemeHotkey);
+  window.removeEventListener('hashchange', onHashChange);
+  if (popupState.value.cleanup) {
+    popupState.value.cleanup();
+  }
   if (cleanupStyle.value) {
     cleanupStyle.value();
     cleanupStyle.value = null;
   }
+  detachExecutionSubmitInterceptor();
   if (flowDiagramSaveTimer.value) {
     clearTimeout(flowDiagramSaveTimer.value);
     flowDiagramSaveTimer.value = null;
@@ -2472,6 +3076,19 @@ onBeforeUnmount(() => {
 watch([flowTasks, flowNodes, flowEdges], queueFlowDiagramPersist, {
   deep: true,
 });
+watch(
+  primaryNav,
+  (nextNav) => {
+    if (nextNav === 'execution') {
+      attachExecutionSubmitInterceptor();
+      return;
+    }
+    detachExecutionSubmitInterceptor();
+  },
+  {
+    flush: 'post',
+  },
+);
 
 function onPromptKeydown(event: KeyboardEvent) {
   if (!(event.target instanceof HTMLTextAreaElement)) {
@@ -2516,7 +3133,7 @@ function onPromptKeydown(event: KeyboardEvent) {
         </div>
       </div>
       <div class="app-topbar-actions">
-        <button type="button" class="app-icon-btn" title="Ir al builder" aria-label="Ir al builder y enfocar el prompt" @click="onTopbarPlay">
+        <button type="button" class="app-icon-btn" title="Ejecutar prototype" aria-label="Ejecutar prototype" @click="onTopbarPlay">
           <i class="bi bi-play-fill" aria-hidden="true"></i>
         </button>
         <button type="button" class="app-text-btn" @click="onExportClick">
@@ -2552,6 +3169,15 @@ function onPromptKeydown(event: KeyboardEvent) {
             <i class="bi bi-diagram-3" aria-hidden="true"></i>
             <span class="app-rail-label">Flujos</span>
           </button>
+        <button
+          type="button"
+          class="app-rail-item"
+          :class="{ 'app-rail-item--active': primaryNav === 'execution' }"
+          @click="navigateToExecution()"
+        >
+          <i class="bi bi-play-btn-fill" aria-hidden="true"></i>
+          <span class="app-rail-label">Ejecución</span>
+        </button>
           <button
             type="button"
             class="app-rail-item"
@@ -2872,6 +3498,20 @@ function onPromptKeydown(event: KeyboardEvent) {
           </div>
           <div v-else :key="`empty-${activeTheme}`" class="canvas-state">{{ message }}</div>
         </Transition>
+        <div v-if="popupState.isOpen" class="screen-popup-backdrop" role="dialog" aria-modal="true" aria-label="Pantalla modal" @click="closePopupScreen">
+          <div class="screen-popup-panel" @click.stop>
+            <header class="screen-popup-header">
+              <strong>{{ popupState.title || 'Popup' }}</strong>
+              <button type="button" class="screen-popup-close" @click="closePopupScreen">Cerrar</button>
+            </header>
+            <div class="screen-popup-content">
+              <p v-if="popupState.isLoading" class="screen-popup-message">Cargando pantalla popup...</p>
+              <p v-else-if="popupState.error" class="screen-popup-message screen-popup-error">{{ popupState.error }}</p>
+              <component v-else-if="popupState.component" :is="popupState.component" />
+              <p v-else class="screen-popup-message">No hay contenido para mostrar.</p>
+            </div>
+          </div>
+        </div>
         <div v-if="isGenerating" class="canvas-status-layer">
           <div class="canvas-status-chip">
             <span class="canvas-status-dot" aria-hidden="true"></span>
@@ -3194,6 +3834,15 @@ function onPromptKeydown(event: KeyboardEvent) {
                 <i class="bi bi-trash3" aria-hidden="true"></i>
                 Eliminar flecha seleccionada
               </button>
+              <button
+                type="button"
+                class="screen-action-btn flow-toolbar-btn flow-toolbar-btn-soft"
+                :disabled="!selectedFlowEdgeId"
+                @click="setSelectedFlowEdgeSubmitPrimary"
+              >
+                <i class="bi bi-flag-fill" aria-hidden="true"></i>
+                {{ selectedFlowEdge?.isSubmitPrimary ? 'Quitar submit principal' : 'Marcar submit principal' }}
+              </button>
             </div>
           </div>
         </div>
@@ -3280,6 +3929,35 @@ function onPromptKeydown(event: KeyboardEvent) {
                     @input="onFlowNodeInput(id, $event)"
                     placeholder="Nombre de tarea"
                   />
+                <button
+                  type="button"
+                  class="screen-action-btn flow-task-start-btn"
+                  :disabled="getFlowNodeView(id)?.task?.isStartTask"
+                  :class="{ 'flow-task-start-btn--active': getFlowNodeView(id)?.task?.isStartTask }"
+                  :aria-label="
+                    getFlowNodeView(id)?.task?.isStartTask
+                      ? 'Esta tarea ya es el inicio'
+                      : 'Marcar como tarea inicial'
+                  "
+                  :title="
+                    getFlowNodeView(id)?.task?.isStartTask
+                      ? 'Esta tarea ya es el inicio'
+                      : 'Marcar como tarea inicial'
+                  "
+                  @click="setFlowTaskAsStart(id)"
+                >
+                  <i
+                    class="bi"
+                    :class="getFlowNodeView(id)?.task?.isStartTask ? 'bi-circle-fill' : 'bi-circle'"
+                    aria-hidden="true"
+                  ></i>
+                </button>
+                <span
+                  v-if="getFlowNodeView(id)?.task?.isStartTask"
+                  class="flow-task-start-badge"
+                >
+                  Inicio
+                </span>
                   <button type="button" class="screen-action-btn flow-task-remove" @click="removeFlowTask(id)">×</button>
                 </header>
                 <label class="flow-task-screen-label">Pantalla asociada</label>
@@ -3291,6 +3969,14 @@ function onPromptKeydown(event: KeyboardEvent) {
                   <option value="">Sin pantalla</option>
                   <option v-for="screen in screens" :key="screen.id" :value="screen.id">{{ screen.name }}</option>
                 </select>
+                <label class="flow-task-popup-check">
+                  <input
+                    type="checkbox"
+                    :checked="getFlowNodeView(id)?.task?.isPopupTask ?? false"
+                    @change="toggleFlowTaskPopupType(id)"
+                  />
+                  <span>Marcar como popup</span>
+                </label>
                 <div class="flow-task-preview">
                   <div v-if="getFlowNodeView(id)?.preview?.isLoading" class="flow-preview-placeholder">
                     Cargando vista previa...
@@ -3329,6 +4015,51 @@ function onPromptKeydown(event: KeyboardEvent) {
       </article>
     </section>
 
+    <section v-else-if="primaryNav === 'execution'" class="canvas-wrap">
+      <article class="canvas-surface">
+        <header class="canvas-header">
+          <div class="canvas-header-top">
+            <div>
+              <h1>Ejecución</h1>
+              <p>{{ executionStartTaskLabel }}</p>
+              <p>{{ executionCurrentTaskLabel }}</p>
+            </div>
+            <div class="screen-toolbar">
+              <button type="button" class="screen-action-btn" @click="navigateToBuilder()">Volver al builder</button>
+            </div>
+          </div>
+        </header>
+        <Transition :name="themeTransitionDirection === 'left' ? 'canvas-swipe-left' : 'canvas-swipe-right'" mode="out-in">
+          <div v-if="generatedComponent" :key="themeTransitionKey" class="canvas-content">
+            <component :is="generatedComponent" />
+          </div>
+          <div v-else :key="`execution-empty-${activeTheme}`" class="canvas-state">
+            {{ message }}
+          </div>
+        </Transition>
+        <div v-if="popupState.isOpen" class="screen-popup-backdrop" role="dialog" aria-modal="true" aria-label="Pantalla modal" @click="closePopupScreen">
+          <div class="screen-popup-panel" @click.stop>
+            <header class="screen-popup-header">
+              <strong>{{ popupState.title || 'Popup' }}</strong>
+              <button type="button" class="screen-popup-close" @click="closePopupScreen">Cerrar</button>
+            </header>
+            <div class="screen-popup-content">
+              <p v-if="popupState.isLoading" class="screen-popup-message">Cargando pantalla popup...</p>
+              <p v-else-if="popupState.error" class="screen-popup-message screen-popup-error">{{ popupState.error }}</p>
+              <component v-else-if="popupState.component" :is="popupState.component" />
+              <p v-else class="screen-popup-message">No hay contenido para mostrar.</p>
+            </div>
+          </div>
+        </div>
+        <div v-if="isGenerating" class="canvas-status-layer">
+          <div class="canvas-status-chip">
+            <span class="canvas-status-dot" aria-hidden="true"></span>
+            {{ generatedComponent ? 'Actualizando pantalla...' : 'Cargando pantalla...' }}
+          </div>
+        </div>
+      </article>
+    </section>
+
     <section v-else class="canvas-wrap nav-placeholder">
       <div class="nav-placeholder-inner">
         <template v-if="primaryNav === 'components'">
@@ -3358,6 +4089,10 @@ function onPromptKeydown(event: KeyboardEvent) {
         <template v-else-if="primaryNav === 'flows'">
           <span class="app-status-dot app-status-dot--ok" aria-hidden="true"></span>
           <span class="app-status-name">Flujo de tareas</span>
+        </template>
+        <template v-else-if="primaryNav === 'execution'">
+          <span class="app-status-dot app-status-dot--ok" aria-hidden="true"></span>
+          <span class="app-status-name">Ejecución de prototype</span>
         </template>
         <template v-else>
           <span class="app-status-name">Rapid Prototype Builder</span>
@@ -4453,6 +5188,20 @@ function onPromptKeydown(event: KeyboardEvent) {
   align-items: center;
 }
 
+.flow-task-start-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.2rem;
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--rp-primary);
+  background: color-mix(in srgb, var(--rp-primary-soft) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--rp-primary) 35%, var(--rp-border));
+}
+
 .flow-task-title {
   flex: 1;
   border: 1px solid var(--rp-border);
@@ -4479,6 +5228,39 @@ function onPromptKeydown(event: KeyboardEvent) {
   padding: 0;
 }
 
+.flow-task-start-btn {
+  width: 1.9rem;
+  min-width: 1.9rem;
+  height: 1.9rem;
+  min-height: 1.9rem;
+  padding: 0;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.flow-task-start-btn .bi {
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.flow-task-start-btn:hover:not(:disabled) {
+  color: #fff;
+  background: var(--rp-primary);
+  border-color: var(--rp-primary);
+}
+
+.flow-task-start-btn--active {
+  color: #fff;
+  background: var(--rp-primary);
+  border-color: var(--rp-primary);
+}
+
 .flow-task-screen-label {
   font-size: 0.8rem;
   color: var(--rp-text-muted);
@@ -4497,6 +5279,14 @@ function onPromptKeydown(event: KeyboardEvent) {
   outline: none;
   border-color: var(--rp-primary);
   box-shadow: 0 0 0 2px var(--rp-primary-soft);
+}
+
+.flow-task-popup-check {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.82rem;
+  color: var(--rp-text-muted);
 }
 
 .flow-task-preview {
@@ -4562,6 +5352,69 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .canvas-content {
   padding: 1rem;
+}
+
+.screen-popup-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  display: grid;
+  place-items: center;
+  z-index: 50;
+}
+
+.screen-popup-panel {
+  width: min(860px, calc(100vw - 2rem));
+  max-height: min(88vh, calc(100vh - 2rem));
+  background: var(--rp-bg-panel);
+  border: 1px solid var(--rp-border);
+  border-radius: 16px;
+  box-shadow: var(--rp-shadow-md);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.screen-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.75rem;
+  background: color-mix(in srgb, var(--rp-bg-subtle) 76%, transparent);
+  border-bottom: 1px solid var(--rp-border);
+  gap: 0.5rem;
+  font-size: 0.93rem;
+  font-weight: 600;
+}
+
+.screen-popup-close {
+  border: 1px solid var(--rp-border);
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
+  border-radius: 10px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.screen-popup-close:hover {
+  background: var(--rp-bg-subtle);
+}
+
+.screen-popup-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.85rem;
+}
+
+.screen-popup-message {
+  margin: 0;
+  color: var(--rp-text-muted);
+}
+
+.screen-popup-error {
+  color: #b91c1c;
 }
 
 .canvas-status-layer {
