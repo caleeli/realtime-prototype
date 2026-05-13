@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"crypto/sha256"
 	"io"
 	"log"
 	"net/http"
@@ -2634,7 +2634,9 @@ func buildGenerationContextLines(context *generationContext, includeNavigationBe
 
 	if includeNavigationBehavior {
 		lines = append(lines, "Navigation behavior:")
-		lines = append(lines, "submit() is the default action for flow navigation.")
+		lines = append(lines, "submit(<taskRouteOrId>) is the default action for flow navigation.")
+		lines = append(lines, "routes() returns all valid task routes in the current flow.")
+		lines = append(lines, "routes(<taskRouteOrId>) resolves the route for a specific task route id.")
 		lines = append(lines, "submit(<taskRouteOrId>) can be used to force an explicit destination when needed.")
 		lines = append(lines, "popup(<taskRouteOrId>) should only be used for popup tasks.")
 	}
@@ -2735,7 +2737,7 @@ func buildDataGenerationSystemPrompt(input dataGenerationRequest) string {
 	parts = append(parts, strings.TrimSpace(string(currentDataJSON)))
 	parts = append(parts, "User request: "+strings.TrimSpace(input.Prompt))
 
-	return strings.Join(parts, " ")
+	return strings.Join(parts, "\n")
 }
 
 func buildPugGenerationSystemPrompt(input pugGenerationRequest) string {
@@ -2773,7 +2775,7 @@ func buildPugGenerationSystemPrompt(input pugGenerationRequest) string {
 	parts = append(parts, strings.TrimSpace(string(currentDataJSON)))
 	parts = append(parts, "User request: "+strings.TrimSpace(input.Prompt))
 
-	return strings.Join(parts, " ")
+	return strings.Join(parts, "\n")
 }
 
 func normalizeGeneratedPug(raw string) string {
@@ -2801,7 +2803,7 @@ func buildGenerationSystemPrompt(userPrompt string, ctx *generationContext) stri
 
 	parts = append(parts, "User request: "+strings.TrimSpace(userPrompt))
 
-	return strings.Join(parts, " ")
+	return strings.Join(parts, "\n")
 }
 
 func defaultUxEvaluatorPromptTemplate() string {
