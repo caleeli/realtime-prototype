@@ -214,6 +214,9 @@ const isSaving = ref(false);
 const lastGeneratedOutput = ref<GenerationPipelineResult | null>(null);
 const isHydratingSession = ref(false);
 const isScreenDirty = ref(false);
+const isFlowNavigationPromptOpen = ref(false);
+const unsavedNavigationScreenName = ref('');
+const isSavingBeforeFlowNavigation = ref(false);
 const dataEditorJson = ref('');
 const dataEditorError = ref('');
 const isApplyingData = ref(false);
@@ -1162,6 +1165,59 @@ function navigateToBuilder() {
   primaryNav.value = 'builder';
 }
 
+function canPromptForUnsavedScreenChanges(): boolean {
+  return primaryNav.value === 'builder' && isScreenDirty.value && !!activeScreenId.value.trim();
+}
+
+function getCurrentScreenNameForPrompt() {
+  const activeScreen = screens.value.find((screen) => screen.id === activeScreenId.value);
+  return activeScreen?.name || 'esta pantalla';
+}
+
+function proceedToFlows() {
+  isFlowNavigationPromptOpen.value = false;
+  primaryNav.value = 'flows';
+  syncFlowTasksToScreens(screens.value);
+}
+
+function cancelUnsavedChangesPrompt() {
+  if (isSavingBeforeFlowNavigation.value) {
+    return;
+  }
+  isFlowNavigationPromptOpen.value = false;
+}
+
+async function saveAndContinueToFlows() {
+  if (isSavingBeforeFlowNavigation.value) {
+    return;
+  }
+
+  isSavingBeforeFlowNavigation.value = true;
+  message.value = '';
+  try {
+    await saveCurrentScreen();
+    proceedToFlows();
+  } catch (_error) {
+    message.value = 'No se pudo guardar la pantalla antes de cambiar a Flujos.';
+  } finally {
+    isSavingBeforeFlowNavigation.value = false;
+  }
+}
+
+function declineSaveAndContinueToFlows() {
+  proceedToFlows();
+}
+
+async function confirmAndSaveBeforeFlowsNavigation(): Promise<boolean> {
+  if (!canPromptForUnsavedScreenChanges()) {
+    return true;
+  }
+
+  unsavedNavigationScreenName.value = getCurrentScreenNameForPrompt();
+  isFlowNavigationPromptOpen.value = true;
+  return false;
+}
+
 function getExecutionStartScreenId(): string {
   const firstTask = getFlowStartTask(flowTasks.value.filter((task) => task.screenId?.trim()));
   return firstTask?.screenId?.trim() ?? '';
@@ -1184,9 +1240,13 @@ function navigateToPlaceholderNav(nav: Exclude<PrimaryNav, 'builder' | 'flows' |
   primaryNav.value = nav;
 }
 
-function navigateToFlows() {
-  primaryNav.value = 'flows';
-  syncFlowTasksToScreens(screens.value);
+async function navigateToFlows() {
+  const canLeave = await confirmAndSaveBeforeFlowsNavigation();
+  if (!canLeave) {
+    return;
+  }
+
+  proceedToFlows();
 }
 
 function onTopbarPlay() {
@@ -4077,6 +4137,66 @@ function onPromptKeydown(event: KeyboardEvent) {
       </div>
     </div>
 
+    <div
+      v-if="isFlowNavigationPromptOpen"
+      class="screen-confirm-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Confirmar navegación con cambios sin guardar"
+      @click.self="cancelUnsavedChangesPrompt"
+    >
+      <div class="screen-confirm-modal">
+        <header class="screen-confirm-header">
+          <span class="screen-confirm-icon" aria-hidden="true">⟳</span>
+          <div>
+            <h3 class="screen-confirm-title">Cambios sin guardar</h3>
+            <p class="screen-confirm-subtitle">La pantalla <strong>{{ unsavedNavigationScreenName }}</strong> tiene cambios pendientes.</p>
+          </div>
+          <button
+            type="button"
+            class="screen-confirm-close"
+            :disabled="isSavingBeforeFlowNavigation"
+            @click="cancelUnsavedChangesPrompt"
+            aria-label="Cerrar confirmación"
+          >
+            Cerrar
+          </button>
+        </header>
+        <div class="screen-confirm-body">
+          <p>
+            Tienes cambios sin guardar. ¿Quieres guardarlos antes de ir a
+            <strong>Flujos</strong>?
+          </p>
+        </div>
+        <div class="screen-confirm-actions">
+          <button
+            type="button"
+            class="screen-action-btn screen-confirm-btn"
+            :disabled="isSavingBeforeFlowNavigation"
+            @click="cancelUnsavedChangesPrompt"
+          >
+            Quedarse en builder
+          </button>
+          <button
+            type="button"
+            class="screen-action-btn screen-confirm-btn screen-confirm-btn--ghost"
+            :disabled="isSavingBeforeFlowNavigation"
+            @click="declineSaveAndContinueToFlows"
+          >
+            Ir sin guardar
+          </button>
+          <button
+            type="button"
+            class="screen-action-btn screen-confirm-btn screen-confirm-btn--primary"
+            :disabled="isSavingBeforeFlowNavigation"
+            @click="saveAndContinueToFlows"
+          >
+            {{ isSavingBeforeFlowNavigation ? 'Guardando...' : 'Guardar y continuar' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <footer class="app-statusbar">
       <div class="app-statusbar-left">
         <template v-if="primaryNav === 'builder'">
@@ -5349,6 +5469,115 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .canvas-content {
   padding: 1rem;
+}
+
+.screen-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 60;
+}
+
+.screen-confirm-modal {
+  width: min(520px, calc(100vw - 2rem));
+  background: var(--rp-bg-panel);
+  border: 1px solid var(--rp-border);
+  border-radius: 16px;
+  box-shadow: var(--rp-shadow-md);
+  overflow: hidden;
+}
+
+.screen-confirm-header {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--rp-border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  background: color-mix(in srgb, var(--rp-bg-subtle) 78%, transparent);
+}
+
+.screen-confirm-icon {
+  color: var(--rp-primary);
+  font-size: 1.35rem;
+  line-height: 1;
+  margin-top: 0.1rem;
+}
+
+.screen-confirm-title {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--rp-text);
+}
+
+.screen-confirm-subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--rp-text-muted);
+  font-size: 0.85rem;
+}
+
+.screen-confirm-close {
+  align-self: flex-start;
+  border: 1px solid var(--rp-border);
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
+  border-radius: 10px;
+  padding: 0.32rem 0.6rem;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.screen-confirm-close:hover {
+  background: var(--rp-bg-subtle);
+}
+
+.screen-confirm-body {
+  padding: 0.85rem 1rem 0.6rem;
+  color: var(--rp-text);
+}
+
+.screen-confirm-body p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.screen-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  padding: 0 1rem 1rem;
+}
+
+.screen-confirm-btn {
+  min-width: 0;
+  width: auto;
+}
+
+.screen-confirm-btn--ghost {
+  background: var(--rp-bg-subtle);
+}
+
+.screen-confirm-btn--ghost:hover {
+  background: color-mix(in srgb, var(--rp-bg-subtle) 68%, #fff);
+}
+
+.screen-confirm-btn--primary {
+  background: var(--rp-primary);
+  border-color: var(--rp-primary);
+  color: #fff;
+}
+
+.screen-confirm-btn--primary:hover {
+  background: var(--rp-primary-hover);
+  border-color: var(--rp-primary-hover);
+}
+
+.screen-confirm-btn--primary:disabled {
+  background: color-mix(in srgb, var(--rp-primary) 65%, #d1d5db);
+  border-color: color-mix(in srgb, var(--rp-primary) 65%, #d1d5db);
 }
 
 .screen-popup-backdrop {
