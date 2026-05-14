@@ -2103,7 +2103,6 @@ async function openPopupScreen(routeOrScreenId?: string): Promise<void> {
       componentLoaders,
       styleId: `popup-screen-${targetScreenId}`,
       runtimeContext: {
-        submit: submitCurrentScreen,
         popup: openPopupScreen,
       },
     });
@@ -2170,7 +2169,6 @@ async function onHashChange() {
 
 function createRuntimeContext() {
   return {
-    submit: submitCurrentScreen,
     popup: openPopupScreen,
   };
 }
@@ -2180,7 +2178,6 @@ function createFlowPreviewRuntimeContext() {
     message.value = 'Acciones de navegación no disponibles en vista previa de flujo.';
   };
   return {
-    submit: noop,
     popup: noop,
   };
 }

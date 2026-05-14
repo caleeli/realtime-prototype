@@ -2215,7 +2215,7 @@ func buildInspirationConversionPrompt(context *generationContext) string {
 		defaultInspirationConversionPromptTemplate(),
 	)
 
-	contextLines := buildGenerationContextLines(context, true)
+	contextLines := buildGenerationContextLines(context)
 	contextText := strings.TrimSpace(strings.Join(contextLines, "\n"))
 	if contextText == "" {
 		contextText = "No additional context constraints."
@@ -2613,7 +2613,7 @@ func appendConversationMessagesForResponse(messages []cerebrasChatMessage, assis
 	return history
 }
 
-func buildGenerationContextLines(context *generationContext, includeNavigationBehavior bool) []string {
+func buildGenerationContextLines(context *generationContext) []string {
 	lines := make([]string, 0, 10)
 	if context == nil {
 		return lines
@@ -2632,14 +2632,10 @@ func buildGenerationContextLines(context *generationContext, includeNavigationBe
 		lines = append(lines, "Enabled packs: "+strings.Join(context.EnabledPacks, ", "))
 	}
 
-	if includeNavigationBehavior {
-		lines = append(lines, "Navigation behavior:")
-		lines = append(lines, "submit(<taskRouteOrId>) is the default action for flow navigation.")
-		lines = append(lines, "routes() returns all valid task routes in the current flow.")
-		lines = append(lines, "routes(<taskRouteOrId>) resolves the route for a specific task route id.")
-		lines = append(lines, "submit(<taskRouteOrId>) can be used to force an explicit destination when needed.")
-		lines = append(lines, "popup(<taskRouteOrId>) should only be used for popup tasks.")
-	}
+	lines = append(lines, "Navigation behavior:")
+	lines = append(lines, "Use normal `<form>` submit handling for flow navigation (form submit events are captured by the runtime).")
+	lines = append(lines, "Do not use a global `submit(...)` function in generated screens.")
+	lines = append(lines, "Use `popup(taskRouteOrId)` only for popup tasks.")
 
 	if len(context.FlowTasks) == 0 {
 		lines = append(lines, "No flow tasks are available.")
@@ -2726,7 +2722,7 @@ func buildDataGenerationSystemPrompt(input dataGenerationRequest) string {
 
 	template := loadDataGenerationSystemPromptTemplate()
 	parts := []string{template}
-	parts = append(parts, buildGenerationContextLines(input.Context, true)...)
+	parts = append(parts, buildGenerationContextLines(input.Context)...)
 
 	currentPug := strings.TrimSpace(input.CurrentPug)
 	if currentPug != "" {
@@ -2760,7 +2756,7 @@ func buildPugGenerationSystemPrompt(input pugGenerationRequest) string {
 
 	template := loadPugGenerationSystemPromptTemplate()
 	parts := []string{template}
-	parts = append(parts, buildGenerationContextLines(input.Context, true)...)
+	parts = append(parts, buildGenerationContextLines(input.Context)...)
 
 	currentPug := strings.TrimSpace(input.CurrentPug)
 	if currentPug != "" {
@@ -2799,7 +2795,7 @@ func normalizeGeneratedPug(raw string) string {
 func buildGenerationSystemPrompt(userPrompt string, ctx *generationContext) string {
 	template := loadGenerationSystemPromptTemplate()
 	parts := []string{template}
-	parts = append(parts, buildGenerationContextLines(ctx, true)...)
+	parts = append(parts, buildGenerationContextLines(ctx)...)
 
 	parts = append(parts, "User request: "+strings.TrimSpace(userPrompt))
 

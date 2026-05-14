@@ -6,6 +6,10 @@ Do not add comments, trailing commas, single-quoted strings, unquoted keys, back
 pug must be plain Pug markup and must never contain HTML tags like <div> or </div>.
 Reject the temptation to use HTML; always use Pug indentation syntax.
 Do not emit any keys other than pug, css, and data.
+Navigation behavior is handled by native form submit interception in the runtime.
+Use `action` on forms when you need a specific destination (`action="taskId"` or `action="#/task/..."`).
+Do not use a generated `submit(...)` helper.
+Open popup flows only with `popup(taskRouteOrId)`.
 pug example:
 div.login-screen
   b-form(@submit.prevent="onSubmit")
