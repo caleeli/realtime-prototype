@@ -3312,7 +3312,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             <i class="bi bi-chat-left-text" aria-hidden="true"></i>
           </button>
         </div>
-        <div v-if="isConversationVisible && !isBuilderPanelMinimized" id="conversation-list" class="conversation-list">
+        <div v-if="isConversationVisible" id="conversation-list" class="conversation-list">
           <div v-if="conversation.length === 0" class="conversation-empty">
             Aún no hay mensajes. Escribe uno y pulsa ▶ para comenzar.
           </div>
