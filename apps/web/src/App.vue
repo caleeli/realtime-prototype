@@ -129,6 +129,7 @@ type FlowTask = {
   screenId: string;
   isPopupTask?: boolean;
   isStartTask?: boolean;
+  customTitle?: boolean;
 };
 
 type FlowConnection = {
@@ -470,6 +471,37 @@ function getFlowTaskBaseLabel(index = 1): string {
   return `Tarea ${index}`;
 }
 
+function resolveFlowTaskDisplayTitle(
+  task: Pick<FlowTask, 'title' | 'customTitle'>,
+  index: number,
+  screenName?: string,
+) {
+  const screenLabel = (screenName ?? '').trim();
+  const trimmedTitle = (task.title ?? '').trim();
+  const differsFromScreen = Boolean(trimmedTitle && screenLabel && trimmedTitle !== screenLabel);
+  const nextCustomTitle = Boolean(task.customTitle || differsFromScreen);
+  if (nextCustomTitle && trimmedTitle) {
+    return { title: trimmedTitle, customTitle: true };
+  }
+  if (screenLabel) {
+    return { title: screenLabel, customTitle: nextCustomTitle };
+  }
+  if (trimmedTitle) {
+    return { title: trimmedTitle, customTitle: nextCustomTitle };
+  }
+  return { title: getFlowTaskBaseLabel(index + 1), customTitle: nextCustomTitle };
+}
+
+function getFlowTaskFieldId(taskId: string, field: string) {
+  const sanitizedField = (field || 'field').replace(/[^a-zA-Z0-9_-]/g, '-');
+  const sanitizedTaskId =
+    (taskId || '')
+      .replace(/[^a-zA-Z0-9_-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '') || 'task';
+  return `flow-${sanitizedField}-${sanitizedTaskId}`;
+}
+
 function getFlowStartTask(allTasks: FlowTask[] = flowTasks.value): FlowTask | null {
   if (allTasks.length === 0) {
     return null;
@@ -595,6 +627,7 @@ async function persistFlowDiagram() {
 
 function applyFlowDiagram(diagram: TaskFlowDiagram) {
   const validScreenIDs = new Set(screens.value.map((screen) => screen.id));
+  const screenNameById = new Map(screens.value.map((screen) => [screen.id, screen.name]));
   const nodePositions = new Map<string, { x: number; y: number }>();
 
   const normalizedTasks: FlowTask[] = [];
@@ -616,10 +649,19 @@ function applyFlowDiagram(diagram: TaskFlowDiagram) {
       nodePositions.set(id, taskPosition);
     }
 
+    const rawScreenId = (entry.screenId || '').trim();
+    const screenName = rawScreenId ? screenNameById.get(rawScreenId) : undefined;
+    const trimmedName = entry.name?.trim() ?? '';
+    const resolvedTitle = resolveFlowTaskDisplayTitle(
+      { title: trimmedName, customTitle: false },
+      normalizedTasks.length,
+      screenName,
+    );
     normalizedTasks.push({
       id,
-      title: entry.name?.trim() || getFlowTaskBaseLabel(normalizedTasks.length + 1),
-      screenId: validScreenIDs.has((entry.screenId || '').trim()) ? entry.screenId.trim() : '',
+      title: resolvedTitle.title,
+      customTitle: resolvedTitle.customTitle,
+      screenId: validScreenIDs.has(rawScreenId) ? rawScreenId : '',
       isPopupTask: entry.isPopupTask === true,
       isStartTask: entry.isStartTask === true,
     });
@@ -635,6 +677,7 @@ function applyFlowDiagram(diagram: TaskFlowDiagram) {
           screenId: screen.id,
           isPopupTask: false,
           isStartTask: false,
+          customTitle: false,
         });
       }
     }
@@ -666,6 +709,7 @@ function applyFlowDiagram(diagram: TaskFlowDiagram) {
     title: task.title || getFlowTaskBaseLabel(index + 1),
     isPopupTask: task.isPopupTask === true,
     isStartTask: task.isStartTask === true,
+    customTitle: task.customTitle ?? false,
   }));
   flowTasks.value = normalizeFlowTaskStartFlags(flowTasks.value);
 
@@ -774,6 +818,7 @@ function buildFlowTaskDefaults(screenId = ''): FlowTask {
     screenId,
     isPopupTask: false,
     isStartTask: flowTasks.value.length === 0,
+    customTitle: false,
   };
 }
 
@@ -822,18 +867,21 @@ function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.val
       screenId: screen.id,
       isPopupTask: false,
       isStartTask: false,
+      customTitle: false,
     }));
     flowTasks.value = normalizeFlowTaskStartFlags(flowTasks.value);
   } else {
     flowTasks.value = flowTasks.value.filter((task) => !task.screenId || validIds.has(task.screenId));
-    flowTasks.value = flowTasks.value.map((task, index) => ({
-      ...task,
-      title:
-        (task.screenId && screenNameById.get(task.screenId)) ||
-        task.title ||
-        getFlowTaskBaseLabel(index + 1),
-      isStartTask: task.isStartTask ?? false,
-    }));
+    flowTasks.value = flowTasks.value.map((task, index) => {
+      const screenName = task.screenId ? screenNameById.get(task.screenId) : undefined;
+      const resolved = resolveFlowTaskDisplayTitle(task, index, screenName);
+      return {
+        ...task,
+        title: resolved.title,
+        customTitle: resolved.customTitle,
+        isStartTask: task.isStartTask ?? false,
+      };
+    });
     const currentIds = new Set(flowTasks.value.map((task) => task.screenId));
     for (const screen of screenList) {
       const hasAssignedScreen = currentIds.has(screen.id);
@@ -1007,7 +1055,16 @@ function removeFlowTask(taskId: string) {
 }
 
 function setFlowTaskTitle(taskId: string, title: string) {
-  flowTasks.value = flowTasks.value.map((task) => (task.id === taskId ? { ...task, title } : task));
+  const trimmedTitle = title.trim();
+  const existingTask = flowTasks.value.find((task) => task.id === taskId);
+  const screenName =
+    existingTask?.screenId
+      ? screens.value.find((screen) => screen.id === existingTask.screenId)?.name ?? ''
+      : '';
+  const hasCustomTitle = Boolean(trimmedTitle && trimmedTitle !== screenName);
+  flowTasks.value = flowTasks.value.map((task) =>
+    task.id === taskId ? { ...task, title: trimmedTitle, customTitle: hasCustomTitle } : task,
+  );
   flowNodes.value = flowNodes.value.map((node) =>
     node.id === taskId
       ? {
@@ -1015,12 +1072,68 @@ function setFlowTaskTitle(taskId: string, title: string) {
           data: {
             ...node.data,
             taskId: taskId,
-            title,
+            title: trimmedTitle,
             isPopupTask: node.data.isPopupTask,
           },
         }
       : node,
   );
+}
+
+function setFlowTaskId(taskId: string, nextId: string) {
+  const sanitized = (nextId ?? '').trim();
+  if (!sanitized || sanitized === taskId) {
+    return;
+  }
+
+  if (flowTasks.value.some((task) => task.id === sanitized)) {
+    return;
+  }
+
+  flowTasks.value = flowTasks.value.map((task) =>
+    task.id === taskId ? { ...task, id: sanitized } : task,
+  );
+
+  const nextPreviews = { ...flowTaskPreviews.value };
+  const previousPreview = nextPreviews[taskId];
+  if (previousPreview?.cleanup) {
+    previousPreview.cleanup();
+  }
+  delete nextPreviews[taskId];
+  flowTaskPreviews.value = nextPreviews;
+
+  flowEdges.value = flowEdges.value.map((edge) => ({
+    ...edge,
+    source: edge.source === taskId ? sanitized : edge.source,
+    target: edge.target === taskId ? sanitized : edge.target,
+  }));
+  syncFlowEdgeSelectionStyle();
+
+  flowNodes.value = flowNodes.value.map((node) =>
+    node.id === taskId
+      ? {
+          ...node,
+          id: sanitized,
+          data: {
+            ...node.data,
+            taskId: sanitized,
+          },
+        }
+      : node,
+  );
+
+  const numericMatch = /^task-(\d+)$/.exec(sanitized);
+  if (numericMatch?.[1]) {
+    const numericValue = Number.parseInt(numericMatch[1], 10);
+    if (Number.isFinite(numericValue) && numericValue >= flowTaskCounter.value) {
+      flowTaskCounter.value = numericValue + 1;
+    }
+  }
+
+  const updatedTask = flowTasks.value.find((task) => task.id === sanitized);
+  if (updatedTask) {
+    void ensureFlowTaskPreview(sanitized, updatedTask.screenId);
+  }
 }
 
 function onFlowTaskScreenChange(taskId: string, event: Event) {
@@ -1159,6 +1272,11 @@ function onFlowPaneClick() {
 function onFlowNodeInput(taskId: string, event: Event) {
   const nextTitle = (event.target as HTMLInputElement).value;
   setFlowTaskTitle(taskId, nextTitle);
+}
+
+function onFlowNodeIdChange(taskId: string, event: Event) {
+  const nextId = (event.target as HTMLInputElement).value;
+  setFlowTaskId(taskId, nextId);
 }
 
 async function onFlowNodeOpen(taskId: string) {
@@ -4275,6 +4393,14 @@ function onPromptKeydown(event: KeyboardEvent) {
                 </span>
                   <button type="button" class="screen-action-btn flow-task-remove" @click="removeFlowTask(id)">×</button>
                 </header>
+                <label class="flow-task-id-label" :for="getFlowTaskFieldId(id, 'task-id')">ID de tarea</label>
+                <input
+                  :id="getFlowTaskFieldId(id, 'task-id')"
+                  class="flow-task-id-input"
+                  type="text"
+                  :value="getFlowNodeView(id)?.task?.id ?? ''"
+                  @change="onFlowNodeIdChange(id, $event)"
+                />
                 <label class="flow-task-screen-label">Pantalla asociada</label>
                 <select
                   class="flow-task-screen-select"
@@ -5605,6 +5731,32 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .flow-task-title::placeholder {
   color: var(--rp-text-muted);
+}
+
+.flow-task-id-label {
+  font-size: 0.8rem;
+  color: var(--rp-text-muted);
+  font-weight: 600;
+  display: block;
+}
+
+.flow-task-id-input {
+  width: 100%;
+  border: 1px solid var(--rp-border);
+  border-radius: 8px;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
+  padding: 0.35rem 0.55rem;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+  font-size: 0.9rem;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.flow-task-id-input:focus {
+  outline: none;
+  border-color: var(--rp-primary);
+  box-shadow: 0 0 0 2px var(--rp-primary-soft);
 }
 
 .flow-task-remove {
