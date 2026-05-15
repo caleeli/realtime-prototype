@@ -103,6 +103,121 @@ func main() {
 
 	mux := http.NewServeMux()
 
+	resolveProjectFromRequest := func(r *http.Request) (projectRecord, error) {
+		projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
+		return sessionStore.getProject(r.Context(), projectID)
+	}
+
+	writeProjectOrSnapshotError := func(w http.ResponseWriter, err error) {
+		if errors.Is(err, errProjectNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	getProjectMethodError := func(w http.ResponseWriter, err error) bool {
+		if errors.Is(err, errProjectNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+			return true
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return true
+	}
+
+	mux.HandleFunc("/api/projects", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			projects, err := sessionStore.listProjects(r.Context())
+			if err != nil {
+				writeProjectOrSnapshotError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, projects)
+			return
+		case http.MethodPost:
+			var payload struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+				return
+			}
+			project, err := sessionStore.createProject(r.Context(), payload.Name)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusCreated, project)
+			return
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+
+	mux.HandleFunc("/api/projects/", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		projectID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/projects/"))
+		if projectID == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		switch r.Method {
+		case http.MethodPatch:
+			var payload struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+				return
+			}
+			if err := sessionStore.renameProject(r.Context(), projectID, payload.Name); err != nil {
+				if errors.Is(err, errProjectNotFound) {
+					writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+					return
+				}
+				if errors.Is(err, errProjectNameRequired) {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			updated, err := sessionStore.getProject(r.Context(), projectID)
+			if err != nil {
+				getProjectMethodError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"id":             updated.ID,
+				"name":           updated.Name,
+				"theme":          updated.Theme,
+				"activeScreenId": updated.ActiveScreen,
+				"createdAt":      updated.CreatedAt,
+				"updatedAt":      updated.UpdatedAt,
+			})
+			return
+
+		case http.MethodDelete:
+			if err := sessionStore.deleteProject(r.Context(), projectID); err != nil {
+				if errors.Is(err, errProjectNotFound) {
+					writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+					return
+				}
+				if errors.Is(err, errProjectDeleteDefault) || errors.Is(err, errProjectDeleteLast) {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+
 	mux.HandleFunc("/api/component-registry", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -133,9 +248,14 @@ func main() {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		snapshot, err := sessionStore.getSnapshot(r.Context())
+		project, err := resolveProjectFromRequest(r)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			getProjectMethodError(w, err)
+			return
+		}
+		snapshot, err := sessionStore.getSnapshot(r.Context(), project.ID)
+		if err != nil {
+			getProjectMethodError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, snapshot)
@@ -144,9 +264,9 @@ func main() {
 	mux.HandleFunc("/api/session/", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		subPath := strings.TrimPrefix(r.URL.Path, "/api/session/")
 
-		project, err := sessionStore.getDefaultProject(r.Context())
+		project, err := resolveProjectFromRequest(r)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			getProjectMethodError(w, err)
 			return
 		}
 
@@ -198,12 +318,12 @@ func main() {
 				return
 			}
 			if err := sessionStore.setTheme(r.Context(), project.ID, payload.Theme); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				getProjectMethodError(w, err)
 				return
 			}
-			updated, err := sessionStore.getDefaultProject(r.Context())
+			updated, err := sessionStore.getProject(r.Context(), project.ID)
 			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				getProjectMethodError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]string{"projectId": updated.ID, "theme": updated.Theme})

@@ -23,6 +23,13 @@ const (
 	defaultTheme              = "bootstrap"
 )
 
+var (
+	errProjectNotFound      = errors.New("project not found")
+	errProjectNameRequired  = errors.New("project name is required")
+	errProjectDeleteDefault = errors.New("default project cannot be deleted")
+	errProjectDeleteLast    = errors.New("cannot delete the last project")
+)
+
 type sessionChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -82,6 +89,15 @@ type projectRecord struct {
 	ActiveScreen string
 	CreatedAt    string
 	UpdatedAt    string
+}
+
+type projectSummary struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Theme           string `json:"theme"`
+	ActiveScreenID  string `json:"activeScreenId"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedAt       string `json:"updatedAt"`
 }
 
 type screenRecord struct {
@@ -171,6 +187,10 @@ func newSessionProjectStore(path string) (*sessionProjectStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := store.normalizeScreenNames(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return store, nil
 }
 
@@ -192,6 +212,66 @@ func (s *sessionProjectStore) bootstrap(ctx context.Context) error {
 	return nil
 }
 
+func (s *sessionProjectStore) normalizeScreenNames(ctx context.Context) error {
+	const projectQuery = `SELECT id FROM projects;`
+	projects, err := s.db.QueryContext(ctx, projectQuery)
+	if err != nil {
+		return err
+	}
+	defer projects.Close()
+
+	for projects.Next() {
+		var projectID string
+		if err := projects.Scan(&projectID); err != nil {
+			return err
+		}
+
+		if err := s.normalizeProjectScreenNames(ctx, projectID); err != nil {
+			return err
+		}
+	}
+	return projects.Err()
+}
+
+func (s *sessionProjectStore) normalizeProjectScreenNames(ctx context.Context, projectID string) error {
+	const screensQuery = `
+		SELECT id, name
+		FROM screens
+		WHERE project_id = ? AND is_deleted = 0
+		ORDER BY created_at ASC, id ASC;
+	`
+	rows, err := s.db.QueryContext(ctx, screensQuery, projectID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	usedNames := make(map[string]int, 16)
+	for rows.Next() {
+		var screenID string
+		var screenName string
+		if err := rows.Scan(&screenID, &screenName); err != nil {
+			return err
+		}
+
+		seen := usedNames[screenName]
+		if seen == 0 {
+			usedNames[screenName] = 1
+			continue
+		}
+
+		nextName := fmt.Sprintf("%s (%d)", screenName, seen)
+		usedNames[screenName] = seen + 1
+		usedNames[nextName] = 1
+
+		if _, err := s.db.ExecContext(ctx, `UPDATE screens SET name = ? WHERE id = ?;`, nextName, screenID); err != nil {
+			return err
+		}
+	}
+
+	return rows.Err()
+}
+
 func (s *sessionProjectStore) getDefaultProject(ctx context.Context) (projectRecord, error) {
 	const query = `
 		SELECT id, name, theme, COALESCE(active_screen_id, ''), created_at, updated_at
@@ -204,6 +284,141 @@ func (s *sessionProjectStore) getDefaultProject(ctx context.Context) (projectRec
 		return project, err
 	}
 	return project, nil
+}
+
+func (s *sessionProjectStore) getProject(ctx context.Context, projectID string) (projectRecord, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return s.getDefaultProject(ctx)
+	}
+
+	const query = `
+		SELECT id, name, theme, COALESCE(active_screen_id, ''), created_at, updated_at
+		FROM projects
+		WHERE id = ?;
+	`
+	var project projectRecord
+	row := s.db.QueryRowContext(ctx, query, projectID)
+	if err := row.Scan(&project.ID, &project.Name, &project.Theme, &project.ActiveScreen, &project.CreatedAt, &project.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return project, errProjectNotFound
+		}
+		return project, err
+	}
+	return project, nil
+}
+
+func (s *sessionProjectStore) listProjects(ctx context.Context) ([]projectSummary, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT id, name, theme, COALESCE(active_screen_id, ''), created_at, updated_at
+		 FROM projects
+		 ORDER BY updated_at DESC, created_at DESC;`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	projects := make([]projectSummary, 0)
+	for rows.Next() {
+		var project projectSummary
+		if err := rows.Scan(&project.ID, &project.Name, &project.Theme, &project.ActiveScreenID, &project.CreatedAt, &project.UpdatedAt); err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return projects, nil
+}
+
+func (s *sessionProjectStore) createProject(ctx context.Context, name string) (projectSummary, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "Nuevo proyecto"
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	projectID := fmt.Sprintf("project-%s", newSessionID())
+	_, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO projects (id, name, theme, active_screen_id, created_at, updated_at)
+		 VALUES (?, ?, ?, NULL, ?, ?);`,
+		projectID,
+		name,
+		defaultTheme,
+		now,
+		now,
+	)
+	if err != nil {
+		return projectSummary{}, err
+	}
+
+	return projectSummary{
+		ID:     projectID,
+		Name:   name,
+		Theme:  defaultTheme,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil
+}
+
+func (s *sessionProjectStore) renameProject(ctx context.Context, projectID, name string) error {
+	projectID = strings.TrimSpace(projectID)
+	name = strings.TrimSpace(name)
+	if projectID == "" {
+		return errProjectNotFound
+	}
+	if name == "" {
+		return errProjectNameRequired
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE projects SET name = ?, updated_at = ? WHERE id = ?;`,
+		name,
+		now,
+		projectID,
+	)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return errProjectNotFound
+	}
+	return nil
+}
+
+func (s *sessionProjectStore) deleteProject(ctx context.Context, projectID string) error {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return errProjectNotFound
+	}
+	if projectID == defaultProjectID {
+		return errProjectDeleteDefault
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM projects;`).Scan(&total); err != nil {
+		return err
+	}
+	if total <= 1 {
+		return errProjectDeleteLast
+	}
+
+	result, err := s.db.ExecContext(ctx, `DELETE FROM projects WHERE id = ?;`, projectID)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return errProjectNotFound
+	}
+	return nil
 }
 
 func (s *sessionProjectStore) listScreens(ctx context.Context, projectID string) ([]sessionScreenSummary, error) {
@@ -262,8 +477,23 @@ func (s *sessionProjectStore) createScreen(ctx context.Context, projectID, name 
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM screens WHERE project_id = ? AND is_deleted = 0;`, projectID).Scan(&existing); err != nil {
 		return sessionScreenSummary{}, err
 	}
-	if strings.TrimSpace(name) == "" {
+	name = strings.TrimSpace(name)
+	if name == "" {
 		name = fmt.Sprintf("Pantalla %d", existing+1)
+	} else {
+		const countByNameQuery = `SELECT COUNT(1) FROM screens WHERE project_id = ? AND is_deleted = 0 AND name = ?;`
+		currentName := name
+		for i := 1; ; i++ {
+			var conflicts int
+			if err := s.db.QueryRowContext(ctx, countByNameQuery, projectID, currentName).Scan(&conflicts); err != nil {
+				return sessionScreenSummary{}, err
+			}
+			if conflicts == 0 {
+				break
+			}
+			currentName = fmt.Sprintf("%s (%d)", name, i)
+		}
+		name = currentName
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -625,8 +855,8 @@ func (s *sessionProjectStore) getLatestState(ctx context.Context, screenID strin
 	}, nil
 }
 
-func (s *sessionProjectStore) getSnapshot(ctx context.Context) (sessionSnapshot, error) {
-	project, err := s.getDefaultProject(ctx)
+func (s *sessionProjectStore) getSnapshot(ctx context.Context, projectID string) (sessionSnapshot, error) {
+	project, err := s.getProject(ctx, projectID)
 	if err != nil {
 		return sessionSnapshot{}, err
 	}

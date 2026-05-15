@@ -36,6 +36,7 @@ import {
   type SessionScreenSummary,
   type SessionScreenState,
   type TaskFlowDiagram,
+  type ProjectSummary,
 } from './services/projectSessionService';
 
 const pipelineService = new GenerationPipelineService({
@@ -213,6 +214,9 @@ const isSessionLoading = ref(false);
 const isSaving = ref(false);
 const lastGeneratedOutput = ref<GenerationPipelineResult | null>(null);
 const isHydratingSession = ref(false);
+const projects = ref<ProjectSummary[]>([]);
+const activeProjectId = ref('');
+const isLoadingProjects = ref(false);
 const isScreenDirty = ref(false);
 const isFlowNavigationPromptOpen = ref(false);
 const unsavedNavigationScreenName = ref('');
@@ -583,7 +587,7 @@ function queueFlowDiagramPersist() {
 
 async function persistFlowDiagram() {
   try {
-    await sessionService.saveFlowDiagram(buildTaskFlowDiagramFromState());
+    await sessionService.saveFlowDiagram(buildTaskFlowDiagramFromState(), activeProjectId.value);
   } catch (_error) {
     // No-op. Diagram persistence should not block editor usage.
   }
@@ -723,7 +727,7 @@ function taskPositionIsDefault(position: { x: number; y: number }) {
 async function hydrateFlowDiagramFromSession() {
   isFlowDiagramHydrating.value = true;
   try {
-    const loaded = await sessionService.loadFlowDiagram();
+    const loaded = await sessionService.loadFlowDiagram(activeProjectId.value);
     applyFlowDiagram(loaded?.diagram || { tasks: [], edges: [] });
   } catch (_error) {
     applyFlowDiagram({ tasks: [], edges: [] });
@@ -800,6 +804,7 @@ function setFlowTaskAsStart(taskId: string) {
 
 function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.value) {
   const validIds = new Set(screenList.map((screen) => screen.id));
+  const screenNameById = new Map(screenList.map((screen) => [screen.id, screen.name]));
   if (screenList.length === 0) {
     flowTaskPreviews.value = {};
     flowNodes.value = [];
@@ -823,7 +828,10 @@ function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.val
     flowTasks.value = flowTasks.value.filter((task) => !task.screenId || validIds.has(task.screenId));
     flowTasks.value = flowTasks.value.map((task, index) => ({
       ...task,
-      title: task.title || getFlowTaskBaseLabel(index + 1),
+      title:
+        (task.screenId && screenNameById.get(task.screenId)) ||
+        task.title ||
+        getFlowTaskBaseLabel(index + 1),
       isStartTask: task.isStartTask ?? false,
     }));
     const currentIds = new Set(flowTasks.value.map((task) => task.screenId));
@@ -923,7 +931,7 @@ async function ensureFlowTaskPreview(taskId: string, screenId: string) {
   }
 
   try {
-    const state = await sessionService.loadLatestState(screenId);
+    const state = await sessionService.loadLatestState(screenId, activeProjectId.value);
     if (!state) {
       flowTaskPreviews.value = {
         ...flowTaskPreviews.value,
@@ -1271,6 +1279,89 @@ async function onShareClick() {
   }
 }
 
+async function onProjectSelectChange() {
+  const targetProjectId = activeProjectId.value.trim();
+  if (!targetProjectId) {
+    return;
+  }
+  isSessionLoading.value = true;
+  try {
+    await loadProjectById(targetProjectId);
+  } catch (_error) {
+    message.value = 'No se pudo cargar el proyecto seleccionado.';
+  } finally {
+    isSessionLoading.value = false;
+  }
+}
+
+async function onCreateProjectClick() {
+  const name = window.prompt('Nombre del nuevo proyecto:', 'Nuevo proyecto');
+  if (!name || !name.trim()) {
+    return;
+  }
+  try {
+    isSessionLoading.value = true;
+    const created = await sessionService.createProject(name.trim());
+    await loadProjects();
+    activeProjectId.value = created.id;
+    await loadProjectById(created.id);
+    message.value = 'Proyecto creado.';
+  } catch (_error) {
+    message.value = 'No se pudo crear el proyecto.';
+  } finally {
+    isSessionLoading.value = false;
+  }
+}
+
+async function onRenameProjectClick() {
+  const targetProjectId = activeProjectId.value.trim();
+  const current = projects.value.find((project) => project.id === targetProjectId);
+  if (!targetProjectId || !current) {
+    return;
+  }
+  const nextName = window.prompt('Nuevo nombre del proyecto:', current.name);
+  if (!nextName || !nextName.trim()) {
+    return;
+  }
+  try {
+    isSessionLoading.value = true;
+    await sessionService.renameProject(targetProjectId, nextName.trim());
+    await loadProjects();
+    message.value = 'Proyecto renombrado.';
+  } catch (_error) {
+    message.value = 'No se pudo renombrar el proyecto.';
+  } finally {
+    isSessionLoading.value = false;
+  }
+}
+
+async function onDeleteProjectClick() {
+  const targetProjectId = activeProjectId.value.trim();
+  if (!targetProjectId) {
+    return;
+  }
+  const current = projects.value.find((project) => project.id === targetProjectId);
+  const confirmMessage = `¿Eliminar el proyecto "${current?.name ?? targetProjectId}"? Esta acción eliminará pantallas y flujos asociados.`;
+  if (!window.confirm(confirmMessage)) {
+    return;
+  }
+  try {
+    isSessionLoading.value = true;
+    await sessionService.deleteProject(targetProjectId);
+    await loadProjects();
+    const nextProject = projects.value.length > 0 ? projects.value[0]?.id : '';
+    if (nextProject) {
+      activeProjectId.value = nextProject;
+      await loadProjectById(nextProject);
+    }
+    message.value = 'Proyecto eliminado.';
+  } catch (_error) {
+    message.value = 'No se pudo eliminar el proyecto.';
+  } finally {
+    isSessionLoading.value = false;
+  }
+}
+
 function onFlowViewportChangeEnd() {
   const viewport = vueFlowRef.value?.getViewport?.();
   const z = viewport?.zoom;
@@ -1315,6 +1406,7 @@ function buildGenerationContextForAI() {
   return {
     locale: navigator.language || 'es-ES',
     theme: activeTheme.value,
+    projectId: activeProjectId.value.trim(),
     targetDensity: 'compact',
     enabledPacks: ['advanced-inputs', 'files', 'charts'],
     flowTasks: flowContext.length > 0 ? flowContext : undefined,
@@ -1696,7 +1788,7 @@ watch(activeTheme, async (theme) => {
   }
 
   try {
-    await sessionService.updateTheme(theme);
+    await sessionService.updateTheme(theme, activeProjectId.value);
   } catch (_error) {
     // Keep UI resilient; theme remains local if persistence fails.
   }
@@ -1707,10 +1799,11 @@ onMounted(async () => {
   window.addEventListener('hashchange', onHashChange);
   try {
     isHydratingSession.value = true;
-    await restoreLastSession();
+    await loadProjects();
+    const hashProjectId = parseActiveProjectFromHash(window.location.hash);
+    await restoreLastSession(hashProjectId);
     await hydrateFlowDiagramFromSession();
-    const hashScreenId = resolveScreenIdFromHashValue(window.location.hash);
-    if (hashScreenId && hashScreenId !== activeScreenId.value) {
+    if (parseHashRoute(window.location.hash).routeType !== 'unknown') {
       await onHashChange();
     }
   } catch (_error) {
@@ -1876,8 +1969,24 @@ async function hydrateFromSessionState(state: SessionScreenState | null) {
   clearPugGenerationHistory();
 }
 
+async function hydrateSessionStateOrReset(state: SessionScreenState | null): Promise<boolean> {
+  try {
+    await hydrateFromSessionState(state);
+    return true;
+  } catch (_error) {
+    clearGeneratedState('No se pudo restaurar el estado guardado de esta pantalla.');
+    conversation.value = [];
+    uxEvaluations.value = [];
+    didUseInspiration.value = false;
+    clearPugGenerationHistory();
+    clearDataGenerationHistory();
+    return false;
+  }
+}
+
 async function refreshScreensFromSession() {
-  const session = await sessionService.getSession();
+  const session = await sessionService.getSession(activeProjectId.value);
+  activeProjectId.value = session.projectId || activeProjectId.value;
   screens.value = session.screens || [];
   syncFlowTasksToScreens(screens.value);
   if (session.theme && session.theme !== activeTheme.value) {
@@ -1886,55 +1995,123 @@ async function refreshScreensFromSession() {
   return session;
 }
 
-function resolveScreenIdFromHashValue(value: string): string {
+async function loadProjects() {
+  isLoadingProjects.value = true;
+  try {
+    const items = await sessionService.listProjects();
+    projects.value = items;
+    if (items.length > 0) {
+      const active = activeProjectId.value.trim();
+      if (!active || !items.some((project) => project.id === active)) {
+        activeProjectId.value = items[0]?.id ?? '';
+      }
+    }
+  } catch (_error) {
+    projects.value = [];
+    throw _error;
+  } finally {
+    isLoadingProjects.value = false;
+  }
+}
+
+async function loadProjectById(projectId: string) {
+  const trimmed = projectId.trim();
+  if (!trimmed) {
+    return;
+  }
+  activeProjectId.value = trimmed;
+  const session = await refreshScreensFromSession();
+  if (session.activeScreenId) {
+    activeScreenId.value = session.activeScreenId;
+    await hydrateSessionStateOrReset(session.activeState);
+    syncBrowserHashForScreen(session.activeScreenId);
+  } else if (screens.value.length > 0) {
+    await openScreen(screens.value[0]?.id ?? '', { force: true });
+  } else {
+    await createNewScreen();
+  }
+  await hydrateFlowDiagramFromSession();
+}
+
+type ParsedHashRoute = {
+  projectId: string;
+  routeType: 'screen' | 'task' | 'unknown';
+  routeValue: string;
+};
+
+function parseHashRoute(value: string): ParsedHashRoute {
   const trimmed = value.trim();
   if (!trimmed) {
-    return '';
+    return { projectId: '', routeType: 'unknown', routeValue: '' };
   }
 
   const withoutHash = trimmed.startsWith('#') ? trimmed.slice(1) : trimmed;
   const base = withoutHash.split('?')[0]?.replace(/^\/+/, '') ?? '';
-  const normalized = base.trim();
+  const segments = base.split('/').filter(Boolean);
+  if (segments.length === 0) {
+    return { projectId: '', routeType: 'unknown', routeValue: '' };
+  }
 
-  const taskMatch = normalized.match(/^task\/([^/]+)(?:\/.*)?$/i);
-  if (taskMatch?.[1]) {
-    const safeTaskId = decodeURIComponentSafe(taskMatch[1]);
+  const first = segments[0]?.toLowerCase();
+  if (first === 'project') {
+    const projectId = decodeURIComponentSafe(segments[1] ?? '').trim();
+    const type = segments[2]?.toLowerCase();
+    if (type === 'screen' || type === 'task') {
+      const value = decodeURIComponentSafe(segments[3] ?? '').trim();
+      return { projectId, routeType: type, routeValue: value };
+    }
+    return { projectId, routeType: 'unknown', routeValue: '' };
+  }
+
+  if (first === 'task') {
+    return { projectId: '', routeType: 'task', routeValue: decodeURIComponentSafe(segments[1] ?? '').trim() };
+  }
+  if (first === 'screen') {
+    return { projectId: '', routeType: 'screen', routeValue: decodeURIComponentSafe(segments[1] ?? '').trim() };
+  }
+
+  const taskFallbackMatch = base.match(/^task\/([^/]+)(?:\/.*)?$/i);
+  if (taskFallbackMatch?.[1]) {
+    return { projectId: '', routeType: 'task', routeValue: decodeURIComponentSafe(taskFallbackMatch[1]).trim() };
+  }
+  const screenFallbackMatch = base.match(/^screen\/(.+)$/i);
+  if (screenFallbackMatch?.[1]) {
+    return { projectId: '', routeType: 'screen', routeValue: decodeURIComponentSafe(screenFallbackMatch[1]).trim() };
+  }
+
+  return { projectId: '', routeType: 'unknown', routeValue: '' };
+}
+
+function parseActiveProjectFromHash(value: string): string {
+  return parseHashRoute(value).projectId;
+}
+
+function resolveScreenIdFromHashValue(value: string): string {
+  const parsed = parseHashRoute(value);
+  if (parsed.routeType === 'task') {
+    const safeTaskId = parsed.routeValue;
     const targetTask = flowTasks.value.find((task) => task.id === safeTaskId);
     if (targetTask?.screenId) {
       return targetTask.screenId;
     }
-  }
-
-  const match = normalized.match(/^screen\/(.+)$/i);
-  const candidate = (match?.[1] || normalized).trim();
-  if (!candidate) {
     return '';
   }
 
+  const candidate = parsed.routeValue || value.trim();
   const safeCandidate = decodeURIComponentSafe(candidate);
   if (isKnownScreenId(safeCandidate)) {
     return safeCandidate;
   }
-
   const byName = screens.value.find((screen) => screen.name.toLowerCase() === safeCandidate.toLowerCase());
   return byName?.id ?? '';
 }
 
 function resolveTaskIdFromHashValue(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return '';
+  const parsed = parseHashRoute(value);
+  if (parsed.routeType === 'task') {
+    return flowTasks.value.some((task) => task.id === parsed.routeValue) ? parsed.routeValue : '';
   }
-
-  const withoutHash = trimmed.startsWith('#') ? trimmed.slice(1) : trimmed;
-  const base = withoutHash.split('?')[0]?.replace(/^\/+/, '') ?? '';
-  const normalized = base.trim();
-  const taskMatch = normalized.match(/^task\/([^/]+)(?:\/.*)?$/i);
-  if (!taskMatch?.[1]) {
-    return '';
-  }
-  const safeTaskId = decodeURIComponentSafe(taskMatch[1]);
-  return flowTasks.value.some((task) => task.id === safeTaskId) ? safeTaskId : '';
+  return '';
 }
 
 function buildTaskRouteSlug(raw: string): string {
@@ -1950,11 +2127,12 @@ function buildTaskRouteSlug(raw: string): string {
 
 function buildTaskHashForTask(task: FlowTask | null | undefined): string {
   if (!task) {
-    return '#/task/';
+    return buildHashWithProjectPrefix('#/task/', true);
   }
   const routeTaskId = encodeURIComponent(task.id.trim());
   const slug = buildTaskRouteSlug(task.title);
-  return slug ? `#/task/${routeTaskId}/${encodeURIComponent(slug)}` : `#/task/${routeTaskId}`;
+  const route = slug ? `#/task/${routeTaskId}/${encodeURIComponent(slug)}` : `#/task/${routeTaskId}`;
+  return buildHashWithProjectPrefix(route, true);
 }
 
 function isKnownTaskId(taskId: string): boolean {
@@ -2008,7 +2186,26 @@ function buildScreenHash(screenId: string): string {
   if (task) {
     return buildTaskHashForTask(task);
   }
-  return `#/screen/${encodeURIComponent(screenId)}`;
+  return buildHashWithProjectPrefix(`#/screen/${encodeURIComponent(screenId)}`, true);
+}
+
+function getProjectHashPrefix(): string {
+  const project = activeProjectId.value.trim();
+  if (!project) {
+    return '#/';
+  }
+  return `#/project/${encodeURIComponent(project)}/`;
+}
+
+function buildHashWithProjectPrefix(hashValue: string, includeFallback = false): string {
+  if (hashValue.startsWith('#/project/')) {
+    return hashValue;
+  }
+  if (hashValue.startsWith('#/')) {
+    const normalized = hashValue.replace(/^#\//, '');
+    return includeFallback || activeProjectId.value.trim() ? `${getProjectHashPrefix()}${normalized}` : `#/${normalized}`;
+  }
+  return includeFallback || activeProjectId.value.trim() ? `${getProjectHashPrefix()}${hashValue}` : `#/${hashValue}`;
 }
 
 function isKnownScreenId(screenId: string): boolean {
@@ -2139,7 +2336,7 @@ async function openPopupScreen(routeOrScreenId?: string): Promise<void> {
   };
 
   try {
-    const state = await sessionService.loadLatestState(targetScreenId);
+    const state = await sessionService.loadLatestState(targetScreenId, activeProjectId.value);
     if (requestId !== popupRuntimeCounter.value) {
       return;
     }
@@ -2213,6 +2410,22 @@ async function onHashChange() {
   if (isProcessingHashNavigation.value) {
     isProcessingHashNavigation.value = false;
     return;
+  }
+
+  const parsed = parseHashRoute(window.location.hash);
+
+  if (parsed.projectId) {
+    const nextProjectId = parsed.projectId.trim();
+    if (nextProjectId && nextProjectId !== activeProjectId.value.trim()) {
+      try {
+        await loadProjectById(nextProjectId);
+        await hydrateFlowDiagramFromSession();
+      } catch (_error) {
+        message.value = `No se pudo cargar el proyecto "${nextProjectId}".`;
+        await restoreLastSession();
+        return;
+      }
+    }
   }
 
   const screenId = resolveScreenIdFromHashValue(window.location.hash);
@@ -2294,10 +2507,10 @@ async function openScreen(screenId: string, options: OpenScreenOptions = {}) {
       message.value = 'Pantalla no encontrada. No se pudo abrir.';
       return;
     }
-    await sessionService.activateScreen(trimmed);
+    await sessionService.activateScreen(trimmed, activeProjectId.value);
     activeScreenId.value = trimmed;
-    const state = await sessionService.loadLatestState(trimmed);
-    await hydrateFromSessionState(state);
+    const state = await sessionService.loadLatestState(trimmed, activeProjectId.value);
+    await hydrateSessionStateOrReset(state);
     const session = await refreshScreensFromSession();
     screens.value = session.screens || screens.value;
     isScreenDirty.value = state === null && screens.value.find((screen) => screen.id === trimmed)?.lastRevision === 0;
@@ -2309,13 +2522,19 @@ async function openScreen(screenId: string, options: OpenScreenOptions = {}) {
   }
 }
 
-async function restoreLastSession() {
+async function restoreLastSession(projectId = '') {
   try {
+    if (projectId.trim()) {
+      activeProjectId.value = projectId.trim();
+    }
     const session = await refreshScreensFromSession();
+    if (!activeProjectId.value && session.projectId) {
+      activeProjectId.value = session.projectId;
+    }
     activeTheme.value = session.theme || activeTheme.value;
     if (session.activeScreenId) {
       activeScreenId.value = session.activeScreenId;
-      await hydrateFromSessionState(session.activeState);
+      await hydrateSessionStateOrReset(session.activeState);
       syncBrowserHashForScreen(session.activeScreenId);
     } else if (screens.value.length > 0) {
       await openScreen(screens.value[0]?.id ?? '');
@@ -2325,15 +2544,30 @@ async function restoreLastSession() {
     isScreenDirty.value = screens.value.find((screen) => screen.id === activeScreenId.value)?.lastRevision === 0;
   } catch (_error) {
     message.value = 'No se pudo cargar la sesión. Iniciando con pantalla limpia.';
-    await createNewScreen();
+    activeProjectId.value = '';
+    try {
+      const fallbackSession = await refreshScreensFromSession();
+      activeTheme.value = fallbackSession.theme || activeTheme.value;
+      if (fallbackSession.activeScreenId) {
+        activeScreenId.value = fallbackSession.activeScreenId;
+        await hydrateSessionStateOrReset(fallbackSession.activeState);
+        syncBrowserHashForScreen(fallbackSession.activeScreenId);
+      } else if (screens.value.length > 0) {
+        await openScreen(screens.value[0]?.id ?? '');
+      } else {
+        await createNewScreen();
+      }
+      isScreenDirty.value = screens.value.find((screen) => screen.id === activeScreenId.value)?.lastRevision === 0;
+      return;
+    } catch (_fallbackError) {
+      await createNewScreen();
+    }
   }
 }
 
 async function createNewScreen() {
-  const nextIndex = screens.value.length + 1;
-  const screenName = `Pantalla ${nextIndex}`;
   resetForEmptyScreen('Nueva pantalla creada. Genera contenido para empezar.');
-  const created = await sessionService.createScreen(screenName);
+  const created = await sessionService.createScreen('', activeProjectId.value);
   const session = await refreshScreensFromSession();
   screens.value = session.screens || screens.value;
   activeScreenId.value = created.id;
@@ -2367,7 +2601,7 @@ async function saveCurrentScreen() {
       },
     };
 
-    await sessionService.saveScreenState(currentScreenId, payload);
+    await sessionService.saveScreenState(currentScreenId, payload, activeProjectId.value);
     const session = await refreshScreensFromSession();
     screens.value = session.screens || screens.value;
     isScreenDirty.value = false;
@@ -2627,7 +2861,7 @@ async function onDeleteScreenClick() {
   isSessionLoading.value = true;
   try {
     const nextScreenId = getFallbackScreenIdForDeletion(targetScreenId);
-    await sessionService.deleteScreen(targetScreenId);
+    await sessionService.deleteScreen(targetScreenId, activeProjectId.value);
     const session = await refreshScreensFromSession();
     screens.value = session.screens || [];
     resetForEmptyScreen('Pantalla eliminada. Selecciona o crea otra pantalla.');
@@ -3190,6 +3424,30 @@ function onPromptKeydown(event: KeyboardEvent) {
         </div>
       </div>
       <div class="app-topbar-actions">
+        <select
+          v-model="activeProjectId"
+          class="project-select"
+          :disabled="isLoadingProjects || isSessionLoading || isSaving"
+          @change="onProjectSelectChange"
+          title="Proyecto activo"
+        >
+          <option value="" disabled>Selecciona proyecto</option>
+          <option v-for="project in projects" :key="project.id" :value="project.id">
+            {{ project.name }}
+          </option>
+        </select>
+        <button type="button" class="app-text-btn" :disabled="isSessionLoading || isSaving" @click="onCreateProjectClick">
+          <i class="bi bi-plus-lg" aria-hidden="true"></i>
+          Proyecto
+        </button>
+        <button type="button" class="app-text-btn" :disabled="isSessionLoading || isSaving || !activeProjectId" @click="onRenameProjectClick">
+          <i class="bi bi-pencil-square" aria-hidden="true"></i>
+          Renombrar
+        </button>
+        <button type="button" class="app-text-btn" :disabled="isSessionLoading || isSaving || !activeProjectId" @click="onDeleteProjectClick">
+          <i class="bi bi-trash3" aria-hidden="true"></i>
+          Eliminar
+        </button>
         <button type="button" class="app-icon-btn" title="Ejecutar prototype" aria-label="Ejecutar prototype" @click="onTopbarPlay">
           <i class="bi bi-play-fill" aria-hidden="true"></i>
         </button>
@@ -4334,6 +4592,7 @@ function onPromptKeydown(event: KeyboardEvent) {
   align-items: center;
   gap: 0.4rem;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .app-icon-btn {
@@ -5060,6 +5319,15 @@ function onPromptKeydown(event: KeyboardEvent) {
 .screen-toolbar .screen-action-btn i {
   margin-right: 0.25rem;
   font-size: 0.92rem;
+}
+
+.project-select {
+  border: 1px solid var(--rp-border);
+  border-radius: 10px;
+  background: var(--rp-bg-panel);
+  color: var(--rp-text);
+  padding: 0.38rem 0.56rem;
+  min-width: 170px;
 }
 
 .screen-select {

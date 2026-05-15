@@ -96,6 +96,15 @@ export type SessionSnapshot = {
   activeState: SessionScreenState | null;
 };
 
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  theme: string;
+  activeScreenId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type CreateScreenResult = {
   id: string;
   name: string;
@@ -109,6 +118,7 @@ const DEFAULT_BASE_URL = '/api';
 const SESSION_ENDPOINT = '/session';
 const SESSION_SCREENS_ENDPOINT = `${SESSION_ENDPOINT}/screens`;
 const SESSION_FLOW_DIAGRAM_ENDPOINT = `${SESSION_ENDPOINT}/flow-diagram`;
+const PROJECTS_ENDPOINT = '/projects';
 
 function buildHeaders(): Record<string, string> {
   return {
@@ -133,6 +143,15 @@ function parseResponse<T>(response: Response): Promise<T> {
   });
 }
 
+function addProjectQuery(url: string, projectId?: string): string {
+  const trimmedProjectId = projectId?.trim();
+  if (!trimmedProjectId) {
+    return url;
+  }
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}projectId=${encodeURIComponent(trimmedProjectId)}`;
+}
+
 export class ProjectSessionService {
   constructor(private readonly options: ProjectSessionServiceOptions = {}) {}
 
@@ -140,16 +159,52 @@ export class ProjectSessionService {
     return this.options.baseUrl?.trim() || DEFAULT_BASE_URL;
   }
 
-  async getSession(): Promise<SessionSnapshot> {
-    const response = await fetch(`${this.baseUrl}${SESSION_ENDPOINT}`, {
+  async listProjects(): Promise<ProjectSummary[]> {
+    const response = await fetch(`${this.baseUrl}${PROJECTS_ENDPOINT}`, {
+      headers: buildHeaders(),
+      method: 'GET',
+    });
+    return parseResponse<ProjectSummary[]>(response);
+  }
+
+  async createProject(name: string): Promise<ProjectSummary> {
+    const response = await fetch(`${this.baseUrl}${PROJECTS_ENDPOINT}`, {
+      method: 'POST',
+      headers: buildHeaders(),
+      body: JSON.stringify({ name }),
+    });
+    return parseResponse<ProjectSummary>(response);
+  }
+
+  async renameProject(projectId: string, name: string): Promise<ProjectSummary> {
+    const url = `${this.baseUrl}${PROJECTS_ENDPOINT}/${encodeURIComponent(projectId)}`;
+    const response = await fetch(url, {
+      method: 'PATCH',
+      headers: buildHeaders(),
+      body: JSON.stringify({ name }),
+    });
+    return parseResponse<ProjectSummary>(response);
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    const url = `${this.baseUrl}${PROJECTS_ENDPOINT}/${encodeURIComponent(projectId)}`;
+    const response = await fetch(url, {
+      method: 'DELETE',
+      headers: buildHeaders(),
+    });
+    await parseResponse<Record<string, string>>(response);
+  }
+
+  async getSession(projectId = ''): Promise<SessionSnapshot> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_ENDPOINT}`, projectId), {
       headers: buildHeaders(),
       method: 'GET',
     });
     return parseResponse<SessionSnapshot>(response);
   }
 
-  async updateTheme(theme: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}${SESSION_ENDPOINT}/theme`, {
+  async updateTheme(theme: string, projectId = ''): Promise<void> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_ENDPOINT}/theme`, projectId), {
       method: 'PATCH',
       headers: buildHeaders(),
       body: JSON.stringify({ theme }),
@@ -157,8 +212,8 @@ export class ProjectSessionService {
     await parseResponse<Record<string, string>>(response);
   }
 
-  async createScreen(name: string): Promise<CreateScreenResult> {
-    const response = await fetch(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}`, {
+  async createScreen(name: string, projectId = ''): Promise<CreateScreenResult> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}`, projectId), {
       method: 'POST',
       headers: buildHeaders(),
       body: JSON.stringify({ name }),
@@ -166,8 +221,11 @@ export class ProjectSessionService {
     return parseResponse<CreateScreenResult>(response);
   }
 
-  async activateScreen(screenId: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}/activate`, {
+  async activateScreen(screenId: string, projectId = ''): Promise<void> {
+    const response = await fetch(addProjectQuery(
+      `${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}/activate`,
+      projectId,
+    ), {
       method: 'PATCH',
       headers: buildHeaders(),
       body: '{}',
@@ -175,16 +233,16 @@ export class ProjectSessionService {
     await parseResponse<Record<string, string>>(response);
   }
 
-  async deleteScreen(screenId: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}`, {
+  async deleteScreen(screenId: string, projectId = ''): Promise<void> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}`, projectId), {
       method: 'DELETE',
       headers: buildHeaders(),
     });
     await parseResponse<Record<string, string>>(response);
   }
 
-  async loadLatestState(screenId: string): Promise<SessionScreenState | null> {
-    const response = await fetch(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}/state/latest`, {
+  async loadLatestState(screenId: string, projectId = ''): Promise<SessionScreenState | null> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}/state/latest`, projectId), {
       headers: buildHeaders(),
       method: 'GET',
     });
@@ -203,11 +261,12 @@ export class ProjectSessionService {
     return JSON.parse(text) as SessionScreenState;
   }
 
-  async loadScreenHistory(screenId: string, limit = 20): Promise<SessionScreenHistory> {
+  async loadScreenHistory(screenId: string, limit = 20, projectId = ''): Promise<SessionScreenHistory> {
     const response = await fetch(
-      `${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}/state?limit=${encodeURIComponent(
-        String(limit),
-      )}`,
+      addProjectQuery(
+        `${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}/state?limit=${encodeURIComponent(String(limit))}`,
+        projectId,
+      ),
       {
         headers: buildHeaders(),
         method: 'GET',
@@ -216,9 +275,13 @@ export class ProjectSessionService {
     return parseResponse<SessionScreenHistory>(response);
   }
 
-  async saveScreenState(screenId: string, payload: SaveScreenStateRequest): Promise<SessionScreenState> {
+  async saveScreenState(
+    screenId: string,
+    payload: SaveScreenStateRequest,
+    projectId = '',
+  ): Promise<SessionScreenState> {
     const response = await fetch(
-      `${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}/state`,
+      addProjectQuery(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}/state`, projectId),
       {
         method: 'POST',
         headers: buildHeaders(),
@@ -228,16 +291,16 @@ export class ProjectSessionService {
     return parseResponse<SessionScreenState>(response);
   }
 
-  async loadFlowDiagram(): Promise<FlowDiagramRecord> {
-    const response = await fetch(`${this.baseUrl}${SESSION_FLOW_DIAGRAM_ENDPOINT}`, {
+  async loadFlowDiagram(projectId = ''): Promise<FlowDiagramRecord> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_FLOW_DIAGRAM_ENDPOINT}`, projectId), {
       headers: buildHeaders(),
       method: 'GET',
     });
     return parseResponse<FlowDiagramRecord>(response);
   }
 
-  async saveFlowDiagram(payload: TaskFlowDiagram): Promise<FlowDiagramRecord> {
-    const response = await fetch(`${this.baseUrl}${SESSION_FLOW_DIAGRAM_ENDPOINT}`, {
+  async saveFlowDiagram(payload: TaskFlowDiagram, projectId = ''): Promise<FlowDiagramRecord> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_FLOW_DIAGRAM_ENDPOINT}`, projectId), {
       method: 'POST',
       headers: buildHeaders(),
       body: JSON.stringify(payload),
