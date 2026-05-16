@@ -18,6 +18,9 @@ Pass data with `:chart-data` and options with `:chart-options`.
 If needed, use Vue bindings (v-model, :prop, @event) and reference fields from data.
 Convert the provided image into a valid screen implementation that matches the visual design.
 
+Project context (apply these guidelines):
+{{PROJECT_CONTEXT}}
+
 Inspiration-image composition is preferred for reusable visuals:
 When the screenshot contains identifiable assets (logo, icon, badge, ornament, card art), recreate them as cropped regions of `images/inspiration.png` instead of inventing new artwork.
 
@@ -43,5 +46,5 @@ div.login-screen
     b-button(type="submit") Login
   .inspiration.inspiration-logo(role="presentation")
 
-Context:
+Navigation and flow context:
 {{context}}

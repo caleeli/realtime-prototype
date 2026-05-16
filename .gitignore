@@ -2,3 +2,4 @@
 .env
 apps/api/cache/inspiration/images/
 apps/api/data/session-store.sqlite
+.semantic-code-mcp/

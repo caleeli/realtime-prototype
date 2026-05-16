@@ -105,6 +105,19 @@ export type ProjectSummary = {
   updatedAt: string;
 };
 
+export type ProjectSettings = {
+  projectId: string;
+  designStyle: string;
+  colorPalette: string;
+  brandGuidelines: string;
+  componentExamples: string;
+  technicalConstraints: string;
+  layoutPreferences: string;
+  imageGenerationNotes: string;
+  generationContext: string;
+  updatedAt: string;
+};
+
 export type CreateScreenResult = {
   id: string;
   name: string;
@@ -306,5 +319,22 @@ export class ProjectSessionService {
       body: JSON.stringify(payload),
     });
     return parseResponse<FlowDiagramRecord>(response);
+  }
+
+  async loadProjectSettings(projectId = ''): Promise<ProjectSettings> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_ENDPOINT}/settings`, projectId), {
+      headers: buildHeaders(),
+      method: 'GET',
+    });
+    return parseResponse<ProjectSettings>(response);
+  }
+
+  async saveProjectSettings(payload: Omit<ProjectSettings, 'projectId' | 'updatedAt'>, projectId = ''): Promise<ProjectSettings> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_ENDPOINT}/settings`, projectId), {
+      method: 'PATCH',
+      headers: buildHeaders(),
+      body: JSON.stringify(payload),
+    });
+    return parseResponse<ProjectSettings>(response);
   }
 }

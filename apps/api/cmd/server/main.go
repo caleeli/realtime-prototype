@@ -329,6 +329,35 @@ func main() {
 			writeJSON(w, http.StatusOK, map[string]string{"projectId": updated.ID, "theme": updated.Theme})
 			return
 
+		case subPath == "settings":
+			if r.Method != http.MethodGet && r.Method != http.MethodPatch {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+
+			if r.Method == http.MethodGet {
+				settings, err := sessionStore.getProjectSettings(r.Context(), project.ID)
+				if err != nil {
+					getProjectMethodError(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, settings)
+				return
+			}
+
+			var payload projectSettingsRecord
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+				return
+			}
+			saved, err := sessionStore.saveProjectSettings(r.Context(), project.ID, payload)
+			if err != nil {
+				getProjectMethodError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, saved)
+			return
+
 		case subPath == "screens":
 			if r.Method != http.MethodPost {
 				w.WriteHeader(http.StatusMethodNotAllowed)
@@ -825,11 +854,18 @@ func muxWithCORS(base *http.ServeMux) http.Handler {
 }
 
 type generationContext struct {
-	Locale        string   `json:"locale"`
-	Theme         string   `json:"theme"`
-	EnabledPacks  []string `json:"enabledPacks"`
-	TargetDensity string   `json:"targetDensity"`
-	FlowTasks     []generationFlowTask `json:"flowTasks"`
+	Locale               string   `json:"locale"`
+	Theme                string   `json:"theme"`
+	EnabledPacks         []string `json:"enabledPacks"`
+	TargetDensity        string   `json:"targetDensity"`
+	FlowTasks            []generationFlowTask `json:"flowTasks"`
+	DesignStyle          string `json:"designStyle,omitempty"`
+	ColorPalette         string `json:"colorPalette,omitempty"`
+	BrandGuidelines      string `json:"brandGuidelines,omitempty"`
+	ComponentExamples    string `json:"componentExamples,omitempty"`
+	TechnicalConstraints string `json:"technicalConstraints,omitempty"`
+	LayoutPreferences    string `json:"layoutPreferences,omitempty"`
+	AdditionalContext    string `json:"additionalContext,omitempty"`
 }
 
 type generationFlowTask struct {
@@ -1291,6 +1327,11 @@ func callImageInspiration(ctx context.Context, input inspirationRequest) (genera
 		}
 	}
 
+	imageGenerationNotes := ""
+	if input.Context != nil {
+		imageGenerationNotes = input.Context.AdditionalContext
+	}
+
 	if imageBase64 == "" {
 		imageBase64, err = callImageGeneration(
 			ctx,
@@ -1304,6 +1345,7 @@ func callImageInspiration(ctx context.Context, input inspirationRequest) (genera
 			imageQuality,
 			imageStyle,
 			imageCount,
+			imageGenerationNotes,
 		)
 		if err != nil {
 			return generationResponse{}, err
@@ -1462,8 +1504,9 @@ func callImageGeneration(
 	quality string,
 	style string,
 	n int,
+	imageGenerationNotes string,
 ) (string, error) {
-	prompt = buildImageGenerationPrompt(prompt, provider, size, quality, style, n)
+	prompt = buildImageGenerationPrompt(prompt, provider, size, quality, style, n, imageGenerationNotes)
 
 	switch provider {
 	case inspirationImageProviderGoogle:
@@ -1473,7 +1516,7 @@ func callImageGeneration(
 	}
 }
 
-func buildImageGenerationPrompt(prompt string, provider string, size string, quality string, style string, n int) string {
+func buildImageGenerationPrompt(prompt string, provider string, size string, quality string, style string, n int, imageGenerationNotes string) string {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return prompt
@@ -1493,6 +1536,14 @@ func buildImageGenerationPrompt(prompt string, provider string, size string, qua
 	template = renderImagePromptTemplate(template, "quality", quality)
 	template = renderImagePromptTemplate(template, "style", style)
 	template = renderImagePromptTemplate(template, "n", fmt.Sprint(n))
+
+	notes := strings.TrimSpace(imageGenerationNotes)
+	if notes != "" {
+		notes = "Project image guidelines:\n" + notes
+	} else {
+		notes = ""
+	}
+	template = renderImagePromptTemplate(template, "IMAGE_GENERATION_NOTES", notes)
 
 	return strings.TrimSpace(template)
 }
@@ -2335,6 +2386,9 @@ func buildInspirationConversionPrompt(context *generationContext) string {
 		defaultInspirationConversionPromptTemplate(),
 	)
 
+	projectContext := buildProjectContextForPrompt(context)
+	template = strings.ReplaceAll(template, "{{PROJECT_CONTEXT}}", projectContext)
+
 	contextLines := buildGenerationContextLines(context)
 	contextText := strings.TrimSpace(strings.Join(contextLines, "\n"))
 	if contextText == "" {
@@ -2363,7 +2417,10 @@ Prefer semantic class names and avoid inventing unknown components.
 If needed, use Vue bindings (v-model, :prop, @event) and reference fields from data.
 Convert the provided image into a valid screen implementation that matches the visual design.
 
-Context:
+Project context (apply these guidelines):
+{{PROJECT_CONTEXT}}
+
+Navigation and flow context:
 {{context}}`
 }
 
@@ -2914,12 +2971,52 @@ func normalizeGeneratedPug(raw string) string {
 
 func buildGenerationSystemPrompt(userPrompt string, ctx *generationContext) string {
 	template := loadGenerationSystemPromptTemplate()
+
+	projectContext := buildProjectContextForPrompt(ctx)
+	template = strings.ReplaceAll(template, "{{PROJECT_CONTEXT}}", projectContext)
+
 	parts := []string{template}
 	parts = append(parts, buildGenerationContextLines(ctx)...)
 
 	parts = append(parts, "User request: "+strings.TrimSpace(userPrompt))
 
 	return strings.Join(parts, "\n")
+}
+
+func buildProjectContextForPrompt(ctx *generationContext) string {
+	if ctx == nil {
+		return "No specific project context provided. Use BootstrapVue best practices and default styling."
+	}
+
+	var lines []string
+
+	if ctx.DesignStyle != "" {
+		lines = append(lines, "Design style: "+ctx.DesignStyle)
+	}
+	if ctx.ColorPalette != "" {
+		lines = append(lines, "Color palette: "+ctx.ColorPalette)
+	}
+	if ctx.BrandGuidelines != "" {
+		lines = append(lines, "Brand guidelines: "+ctx.BrandGuidelines)
+	}
+	if ctx.ComponentExamples != "" {
+		lines = append(lines, "Preferred components: "+ctx.ComponentExamples)
+	}
+	if ctx.LayoutPreferences != "" {
+		lines = append(lines, "Layout preferences: "+ctx.LayoutPreferences)
+	}
+	if ctx.TechnicalConstraints != "" {
+		lines = append(lines, "Technical constraints: "+ctx.TechnicalConstraints)
+	}
+	if ctx.AdditionalContext != "" {
+		lines = append(lines, "Additional context: "+ctx.AdditionalContext)
+	}
+
+	if len(lines) == 0 {
+		return "No specific project context provided. Use BootstrapVue best practices and default styling."
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func defaultUxEvaluatorPromptTemplate() string {
@@ -3119,7 +3216,10 @@ div.login-screen
     b-form-input(v-model="form.username" placeholder="Username")
     b-button(type="submit") Login
 css must be valid plain CSS (no nested syntax, no preprocessors, no trailing commas).
-data can be an object with any example values used by the screen.`
+data can be an object with any example values used by the screen.
+
+Project context (apply these guidelines to all generated screens):
+{{PROJECT_CONTEXT}}`
 }
 
 func defaultDataGenerationSystemPromptTemplate() string {

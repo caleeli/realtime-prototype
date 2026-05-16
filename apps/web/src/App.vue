@@ -37,7 +37,9 @@ import {
   type SessionScreenState,
   type TaskFlowDiagram,
   type ProjectSummary,
+  type ProjectSettings,
 } from './services/projectSessionService';
+import ProjectSettingsPanel from './components/ProjectSettingsPanel.vue';
 
 const pipelineService = new GenerationPipelineService({
   baseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api',
@@ -219,6 +221,9 @@ const projects = ref<ProjectSummary[]>([]);
 const activeProjectId = ref('');
 const isLoadingProjects = ref(false);
 const isScreenDirty = ref(false);
+const projectSettings = ref<ProjectSettings | null>(null);
+const isLoadingProjectSettings = ref(false);
+const isSavingProjectSettings = ref(false);
 const isFlowNavigationPromptOpen = ref(false);
 const unsavedNavigationScreenName = ref('');
 const isSavingBeforeFlowNavigation = ref(false);
@@ -1366,6 +1371,11 @@ function navigateToPlaceholderNav(nav: Exclude<PrimaryNav, 'builder' | 'flows' |
   primaryNav.value = nav;
 }
 
+async function navigateToSettings() {
+  primaryNav.value = 'settings';
+  await loadProjectSettings();
+}
+
 async function navigateToFlows() {
   const canLeave = await confirmAndSaveBeforeFlowsNavigation();
   if (!canLeave) {
@@ -1521,7 +1531,9 @@ function buildPugGenerationContext() {
 
 function buildGenerationContextForAI() {
   const flowContext = buildFlowTaskPromptNavigationContext();
-  return {
+  const settings = projectSettings.value;
+
+  const projectContext: Record<string, unknown> = {
     locale: navigator.language || 'es-ES',
     theme: activeTheme.value,
     projectId: activeProjectId.value.trim(),
@@ -1529,6 +1541,32 @@ function buildGenerationContextForAI() {
     enabledPacks: ['advanced-inputs', 'files', 'charts'],
     flowTasks: flowContext.length > 0 ? flowContext : undefined,
   };
+
+  if (settings) {
+    if (settings.designStyle?.trim()) {
+      projectContext.designStyle = settings.designStyle.trim();
+    }
+    if (settings.colorPalette?.trim()) {
+      projectContext.colorPalette = settings.colorPalette.trim();
+    }
+    if (settings.brandGuidelines?.trim()) {
+      projectContext.brandGuidelines = settings.brandGuidelines.trim();
+    }
+    if (settings.componentExamples?.trim()) {
+      projectContext.componentExamples = settings.componentExamples.trim();
+    }
+    if (settings.technicalConstraints?.trim()) {
+      projectContext.technicalConstraints = settings.technicalConstraints.trim();
+    }
+    if (settings.layoutPreferences?.trim()) {
+      projectContext.layoutPreferences = settings.layoutPreferences.trim();
+    }
+    if (settings.generationContext?.trim()) {
+      projectContext.additionalContext = settings.generationContext.trim();
+    }
+  }
+
+  return projectContext;
 }
 
 function buildFlowTaskPromptNavigationContext(): FlowTaskPromptNavigation[] {
@@ -2132,12 +2170,47 @@ async function loadProjects() {
   }
 }
 
+async function loadProjectSettings() {
+  if (!activeProjectId.value) {
+    return;
+  }
+  isLoadingProjectSettings.value = true;
+  try {
+    const settings = await sessionService.loadProjectSettings(activeProjectId.value);
+    projectSettings.value = settings;
+  } catch (_error) {
+    projectSettings.value = null;
+  } finally {
+    isLoadingProjectSettings.value = false;
+  }
+}
+
+async function saveProjectSettings(settings: Omit<ProjectSettings, 'projectId' | 'updatedAt'>) {
+  if (!activeProjectId.value) {
+    message.value = 'No hay proyecto activo para guardar la configuración.';
+    return;
+  }
+  isSavingProjectSettings.value = true;
+  try {
+    const saved = await sessionService.saveProjectSettings(settings, activeProjectId.value);
+    projectSettings.value = saved;
+    message.value = 'Configuración del proyecto guardada.';
+  } catch (_error) {
+    message.value = 'No se pudo guardar la configuración del proyecto.';
+  } finally {
+    isSavingProjectSettings.value = false;
+  }
+}
+
 async function loadProjectById(projectId: string) {
   const trimmed = projectId.trim();
   if (!trimmed) {
     return;
   }
   activeProjectId.value = trimmed;
+
+  const settingsPromise = loadProjectSettings();
+
   const session = await refreshScreensFromSession();
   if (session.activeScreenId) {
     activeScreenId.value = session.activeScreenId;
@@ -2149,6 +2222,8 @@ async function loadProjectById(projectId: string) {
     await createNewScreen();
   }
   await hydrateFlowDiagramFromSession();
+
+  await settingsPromise;
 }
 
 type ParsedHashRoute = {
@@ -3633,7 +3708,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             type="button"
             class="app-rail-item"
             :class="{ 'app-rail-item--active': primaryNav === 'settings' }"
-            @click="navigateToPlaceholderNav('settings')"
+            @click="navigateToSettings()"
           >
             <i class="bi bi-gear" aria-hidden="true"></i>
             <span class="app-rail-label">Ajustes</span>
@@ -4501,6 +4576,15 @@ function onPromptKeydown(event: KeyboardEvent) {
       </article>
     </section>
 
+    <section v-else-if="primaryNav === 'settings'" class="canvas-wrap canvas-wrap--settings">
+      <ProjectSettingsPanel
+        :settings="projectSettings"
+        :is-loading="isLoadingProjectSettings"
+        :is-saving="isSavingProjectSettings"
+        @save="saveProjectSettings"
+      />
+    </section>
+
     <section v-else class="canvas-wrap nav-placeholder">
       <div class="nav-placeholder-inner">
         <template v-if="primaryNav === 'components'">
@@ -4510,10 +4594,6 @@ function onPromptKeydown(event: KeyboardEvent) {
         <template v-else-if="primaryNav === 'library'">
           <h2 class="nav-placeholder-title">Biblioteca</h2>
           <p class="nav-placeholder-text">Inspiración y plantillas reutilizables. Sección en preparación.</p>
-        </template>
-        <template v-else>
-          <h2 class="nav-placeholder-title">Ajustes</h2>
-          <p class="nav-placeholder-text">Preferencias de proyecto y cuenta. Sección en preparación.</p>
         </template>
         <button type="button" class="screen-action-btn nav-placeholder-back" @click="navigateToBuilder()">Volver al builder</button>
       </div>
@@ -5402,6 +5482,10 @@ function onPromptKeydown(event: KeyboardEvent) {
   display: flex;
   flex-direction: column;
   width: 100%;
+  overflow: hidden;
+}
+
+.canvas-wrap--settings {
   overflow: hidden;
 }
 

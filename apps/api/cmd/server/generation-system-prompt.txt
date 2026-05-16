@@ -28,3 +28,6 @@ Use `b-chart-*` directly (for example: `b-chart-bar`, `b-chart-line`) so the fro
 Example:
 div.report
   b-chart-line(chart-type='line' :chart-data='chartData' :chart-options='chartOptions')
+
+Project context (apply these guidelines to all generated screens):
+{{PROJECT_CONTEXT}}

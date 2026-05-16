@@ -975,3 +975,96 @@ func newSessionID() string {
 	}
 	return hex.EncodeToString(bytes)
 }
+
+type projectSettingsRecord struct {
+	ProjectID             string `json:"projectId"`
+	DesignStyle           string `json:"designStyle"`
+	ColorPalette          string `json:"colorPalette"`
+	BrandGuidelines       string `json:"brandGuidelines"`
+	ComponentExamples     string `json:"componentExamples"`
+	TechnicalConstraints  string `json:"technicalConstraints"`
+	LayoutPreferences     string `json:"layoutPreferences"`
+	ImageGenerationNotes  string `json:"imageGenerationNotes"`
+	GenerationContext     string `json:"generationContext"`
+	UpdatedAt             string `json:"updatedAt"`
+}
+
+func (s *sessionProjectStore) getProjectSettings(ctx context.Context, projectID string) (projectSettingsRecord, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return projectSettingsRecord{}, errProjectNotFound
+	}
+
+	const query = `
+		SELECT project_id, design_style, color_palette, brand_guidelines,
+		       component_examples, technical_constraints, layout_preferences,
+		       image_generation_notes, generation_context, updated_at
+		FROM project_settings
+		WHERE project_id = ?;
+	`
+	var settings projectSettingsRecord
+	row := s.db.QueryRowContext(ctx, query, projectID)
+	err := row.Scan(
+		&settings.ProjectID,
+		&settings.DesignStyle,
+		&settings.ColorPalette,
+		&settings.BrandGuidelines,
+		&settings.ComponentExamples,
+		&settings.TechnicalConstraints,
+		&settings.LayoutPreferences,
+		&settings.ImageGenerationNotes,
+		&settings.GenerationContext,
+		&settings.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return projectSettingsRecord{
+				ProjectID: projectID,
+			}, nil
+		}
+		return projectSettingsRecord{}, err
+	}
+	return settings, nil
+}
+
+func (s *sessionProjectStore) saveProjectSettings(ctx context.Context, projectID string, settings projectSettingsRecord) (projectSettingsRecord, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return projectSettingsRecord{}, errProjectNotFound
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO project_settings (
+			project_id, design_style, color_palette, brand_guidelines,
+			component_examples, technical_constraints, layout_preferences,
+			image_generation_notes, generation_context, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(project_id) DO UPDATE SET
+			design_style = excluded.design_style,
+			color_palette = excluded.color_palette,
+			brand_guidelines = excluded.brand_guidelines,
+			component_examples = excluded.component_examples,
+			technical_constraints = excluded.technical_constraints,
+			layout_preferences = excluded.layout_preferences,
+			image_generation_notes = excluded.image_generation_notes,
+			generation_context = excluded.generation_context,
+			updated_at = excluded.updated_at;`,
+		projectID,
+		strings.TrimSpace(settings.DesignStyle),
+		strings.TrimSpace(settings.ColorPalette),
+		strings.TrimSpace(settings.BrandGuidelines),
+		strings.TrimSpace(settings.ComponentExamples),
+		strings.TrimSpace(settings.TechnicalConstraints),
+		strings.TrimSpace(settings.LayoutPreferences),
+		strings.TrimSpace(settings.ImageGenerationNotes),
+		strings.TrimSpace(settings.GenerationContext),
+		now,
+	)
+	if err != nil {
+		return projectSettingsRecord{}, err
+	}
+
+	return s.getProjectSettings(ctx, projectID)
+}

@@ -1,3 +1,8 @@
+---
+description: 
+alwaysApply: true
+---
+
 ## Purpose
 This project builds an app that generates UI screens from natural language prompts, using output in Pug + CSS notation, rendered in Vue with BootstrapVue components and optional extra components.
 
@@ -134,3 +139,84 @@ This project builds an app that generates UI screens from natural language promp
 - Minimum documentation updated.
 - Performance metrics not degraded.
 - Risks and technical decisions recorded.
+
+## Current implemented features
+- End-to-end screen generation pipeline from prompt to `pug/css/data` with backend validation/repair and frontend rendering.
+- Project-based session management (multiple projects, active screen, screen history/revisions, soft delete constraints).
+- Component registry API with persistent JSON storage, enable/disable flags, CRUD, and catalog versioning.
+- Prompt-context aware generation with enabled component catalog and conversation history.
+- Incremental generation modes: full screen, data-only regeneration, pug-only regeneration.
+- UX evaluator endpoint integration (assistant recommendations loop).
+- Inspiration flow: image generation + vision analysis + conversion to UI prompt.
+- Runtime rendering engine that parses Pug AST and resolves BootstrapVueNext/custom components dynamically.
+- Custom/fallback component loading for demo packs (`advanced-inputs`, `files`) and chart rendering (`VueChart`).
+- Flow-diagram editing model (tasks/edges, popup tasks, submit-primary edges) persisted per project.
+- SQLite-backed migrations for session schema bootstrap and upgrades.
+- JSON repair logic for malformed LLM responses (escaped keys/quotes/URLs in `pug/css/data` fields).
+- Storybook scenarios for validating generated-screen renderer behavior.
+
+## Source code index
+- `apps/api/cmd/server/main.go`: HTTP server entrypoint; routes for generation, inspiration, UX evaluator, projects, session, and component registry.
+- `apps/api/cmd/server/projectSessionStore.go`: SQLite session/project store, revisioning, snapshot assembly, project/screen CRUD rules, flow diagram persistence.
+- `apps/api/cmd/server/fix_json.go`: LLM JSON repair/sanitization utilities for `pug/css/data` payloads.
+- `apps/api/cmd/server/fix_json_test.go`: tests for JSON repair edge cases (escaped fields, URL preservation, fixture parsing).
+- `apps/api/cmd/server/generation-system-prompt.txt`: base system prompt template for UI generation.
+- `apps/api/cmd/server/ux-evaluator.txt`: system prompt template for UX recommendations.
+- `apps/api/cmd/server/inspiration-conversion-prompt.txt`: prompt template to convert inspiration analysis into UI generation input.
+- `apps/api/cmd/server/image-generation-prompt.txt`: prompt template used for inspiration image generation.
+- `apps/api/cmd/server/test_vlm.txt`: local test prompt/content for vision-language experiments.
+- `apps/api/cmd/server/test_pug_with_urls.json`: malformed/complex JSON fixture used by repair tests.
+- `apps/api/internal/registry/model.go`: backend component registry domain types.
+- `apps/api/internal/registry/seed.go`: backend seeded component catalog and version.
+- `apps/api/internal/registry/service.go`: in-memory + persisted component registry service (list/register/update/delete/enable).
+- `apps/api/internal/db/sessionmigrations/sessionmigrations.go`: migration runner and migration history tracking.
+- `apps/api/internal/db/sessionmigrations/sql/0001_init_session_schema.up.sql`: initial session/project/screen schema.
+- `apps/api/internal/db/sessionmigrations/sql/0002_seed_default_project.up.sql`: default project bootstrap migration.
+- `apps/api/internal/db/sessionmigrations/sql/0003_add_flow_diagrams.up.sql`: flow-diagram storage migration.
+- `apps/web/src/main.ts`: Vue app bootstrap, BootstrapVueNext setup, tooltip directive registration.
+- `apps/web/src/App.vue`: main UI shell; builder workspace, generation actions, session/project UX, flow canvas, editors, recommendations.
+- `apps/web/src/services/generationPipelineService.ts`: frontend API client + parser helpers for generation/data/pug/UX/inspiration calls.
+- `apps/web/src/services/generationRenderService.ts`: generated-screen runtime compiler/renderer from parsed Pug + CSS + data.
+- `apps/web/src/services/projectSessionService.ts`: frontend client for projects/sessions/screens/history/flow-diagram endpoints.
+- `apps/web/src/services/componentRegistryApi.ts`: frontend client for component registry CRUD and enable/disable.
+- `apps/web/src/services/componentRegistrar.ts`: utility to register enabled catalog components into Vue app and shape prompt catalog payload.
+- `apps/web/src/components/charts/VueChart.ts`: chart wrapper component mapping generic chart props to `vue-chartjs` renderers.
+- `apps/web/src/GeneratedScreen.stories.ts`: Storybook stories exercising Pug/CSS/data rendering and component resolution.
+- `packages/component-registry/src/types.ts`: shared TypeScript catalog schemas.
+- `packages/component-registry/src/seed.ts`: shared seeded catalog data for frontend/package usage.
+- `packages/component-registry/src/index.ts`: package exports and utility helpers (`buildInventoryResponse`, `upsertComponent`).
+- `README.md`: root runbook (env setup, backend/frontend/storybook startup).
+- `docs/PROJECT_IDEA.md`: product/architecture idea document (reference spec).
+
+## Where to find things
+- `apps/web/src/App.vue`: Main orchestration surface. Very high state/event density. Must document:
+  - primary navigation/workspaces and responsibilities,
+  - generation lifecycle and status flags,
+  - session/project/screen synchronization flow,
+  - flow-diagram interactions and popup navigation behavior,
+  - editing loops for `data`, `pug`, and `css` (including undo/redo stacks).
+- `apps/api/cmd/server/main.go`: Core API and pipeline orchestrator. Must document:
+  - endpoint map (method/path/purpose),
+  - request/response contracts per generation mode,
+  - validation/repair gates and failure behavior,
+  - inspiration image/vision pipeline and provider switching,
+  - security controls and sanitization points.
+- `apps/web/src/services/generationPipelineService.ts`: Frontend generation contract layer. Must document:
+  - public methods and exact input/output shapes,
+  - parser/AST and import-metadata extraction path,
+  - timeout/retry/error behavior (`GenerationServiceError`),
+  - differences between full generation vs data-only vs pug-only flows.
+- `apps/web/src/services/generationRenderService.ts`: Runtime screen renderer. Must document:
+  - component resolution strategy (BootstrapVueNext, aliases, dynamic loaders),
+  - tag normalization and chart-tag mapping rules,
+  - unresolved component fallback policy,
+  - style injection lifecycle and cleanup behavior.
+- `apps/api/cmd/server/projectSessionStore.go`: Persistence and invariants core. Must document:
+  - SQLite data model and migration dependencies,
+  - revision/history model and active-screen semantics,
+  - project/screen lifecycle constraints (default/last project rules),
+  - flow-diagram storage schema and update behavior.
+- `apps/web/src/services/projectSessionService.ts` (Priority P2): Session API client façade. Must document:
+  - endpoint-to-method mapping,
+  - payload contracts for state saves/history loads/flow diagram updates,
+  - project scoping through `projectId` query propagation.
