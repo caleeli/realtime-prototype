@@ -3155,6 +3155,9 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
   const payload: InspirationRequest = {
     prompt,
     context: buildGenerationContextForAI(),
+    currentPug: lastGeneratedOutput.value?.sourcePug ?? '',
+    currentCss: lastGeneratedOutput.value?.css ?? '',
+    currentData: cloneDataValue(lastGeneratedOutput.value?.data ?? {}),
     messages: buildUserPayloadMessages(history),
   };
 

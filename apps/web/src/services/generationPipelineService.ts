@@ -23,6 +23,9 @@ export interface GenerationMessage {
 export interface GenerationRequest {
   prompt: string;
   context?: GenerationContext;
+  currentPug?: string;
+  currentCss?: string;
+  currentData?: unknown;
   messages?: GenerationMessage[];
 }
 

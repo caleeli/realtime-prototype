@@ -879,9 +879,12 @@ type generationFlowTask struct {
 }
 
 type generationRequest struct {
-	Prompt   string                `json:"prompt"`
-	Context  *generationContext    `json:"context"`
-	Messages []cerebrasChatMessage `json:"messages"`
+	Prompt      string                `json:"prompt"`
+	Context     *generationContext    `json:"context"`
+	CurrentPug  string                `json:"currentPug"`
+	CurrentCss  string                `json:"currentCss"`
+	CurrentData interface{}           `json:"currentData"`
+	Messages    []cerebrasChatMessage `json:"messages"`
 }
 
 type dataGenerationRequest struct {
@@ -2626,7 +2629,7 @@ func filterUXRecommendations(recommendations []string) []string {
 func buildCerebrasRequestMessages(input generationRequest) []cerebrasChatMessage {
 	return buildConversationMessagesFromInput(
 		input.Messages,
-		buildGenerationSystemPrompt(input.Prompt, input.Context),
+		buildGenerationSystemPrompt(input),
 		input.Prompt,
 		true,
 	)
@@ -2653,7 +2656,7 @@ func buildCerebrasPugGenerationMessages(input pugGenerationRequest) []cerebrasCh
 func buildCerebrasRequestMessagesForResponse(input generationRequest) []cerebrasChatMessage {
 	return buildConversationMessagesFromInput(
 		input.Messages,
-		buildGenerationSystemPrompt(input.Prompt, input.Context),
+		buildGenerationSystemPrompt(input),
 		input.Prompt,
 		false,
 	)
@@ -2971,16 +2974,43 @@ func normalizeGeneratedPug(raw string) string {
 	return strings.TrimSpace(text)
 }
 
-func buildGenerationSystemPrompt(userPrompt string, ctx *generationContext) string {
+func buildGenerationSystemPrompt(input generationRequest) string {
 	template := loadGenerationSystemPromptTemplate()
 
-	projectContext := buildProjectContextForPrompt(ctx)
+	projectContext := buildProjectContextForPrompt(input.Context)
 	template = strings.ReplaceAll(template, "{{PROJECT_CONTEXT}}", projectContext)
 
 	parts := []string{template}
-	parts = append(parts, buildGenerationContextLines(ctx)...)
+	parts = append(parts, buildGenerationContextLines(input.Context)...)
+	parts = append(parts, "User request: "+strings.TrimSpace(input.Prompt))
 
-	parts = append(parts, "User request: "+strings.TrimSpace(userPrompt))
+	if strings.TrimSpace(input.CurrentPug) != "" || strings.TrimSpace(input.CurrentCss) != "" || input.CurrentData != nil {
+		currentData := map[string]interface{}{}
+		if input.CurrentData != nil {
+			switch value := input.CurrentData.(type) {
+			case map[string]interface{}:
+				currentData = value
+			default:
+				rawData, _ := json.Marshal(input.CurrentData)
+				if len(rawData) > 0 && len(rawData) < 1<<20 {
+					var fallback map[string]interface{}
+					if err := json.Unmarshal(rawData, &fallback); err == nil {
+						currentData = fallback
+					}
+				}
+			}
+		}
+		currentDataJSON, _ := json.Marshal(currentData)
+		parts = append(parts,
+			"Current screen base (preserve style/structure unless user explicitly requests major redesign):",
+			"Current PUG:",
+			strings.TrimSpace(input.CurrentPug),
+			"Current CSS:",
+			strings.TrimSpace(input.CurrentCss),
+			"Current Data JSON:",
+			strings.TrimSpace(string(currentDataJSON)),
+		)
+	}
 
 	return strings.Join(parts, "\n")
 }
