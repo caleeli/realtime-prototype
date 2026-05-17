@@ -127,11 +127,35 @@ export type CreateScreenResult = {
   lastRevision: number;
 };
 
+export type ProjectImageVersion = {
+  id: string;
+  prompt: string;
+  createdAt: string;
+  sourceType: string;
+  fileName: string;
+  sizeBytes: number;
+};
+
+export type ProjectImageAsset = {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+  currentVersionId: string;
+  currentImageUrl: string;
+  versions: ProjectImageVersion[];
+  redoAvailable: boolean;
+  rollbackAvailable: boolean;
+};
+
 const DEFAULT_BASE_URL = '/api';
 const SESSION_ENDPOINT = '/session';
 const SESSION_SCREENS_ENDPOINT = `${SESSION_ENDPOINT}/screens`;
 const SESSION_FLOW_DIAGRAM_ENDPOINT = `${SESSION_ENDPOINT}/flow-diagram`;
 const PROJECTS_ENDPOINT = '/projects';
+const PROJECT_IMAGES_ENDPOINT = '/project-images';
 
 function buildHeaders(): Record<string, string> {
   return {
@@ -336,5 +360,105 @@ export class ProjectSessionService {
       body: JSON.stringify(payload),
     });
     return parseResponse<ProjectSettings>(response);
+  }
+
+  async listProjectImages(projectId = ''): Promise<ProjectImageAsset[]> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${PROJECT_IMAGES_ENDPOINT}`, projectId), {
+      headers: buildHeaders(),
+      method: 'GET',
+    });
+    return parseResponse<ProjectImageAsset[]>(response);
+  }
+
+  async generateProjectImage(
+    payload: { prompt: string; name?: string; description?: string; imageModel?: string; imageSize?: string; imageQuality?: string; imageStyle?: string },
+    projectId = '',
+  ): Promise<ProjectImageAsset> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${PROJECT_IMAGES_ENDPOINT}/generate`, projectId), {
+      method: 'POST',
+      headers: buildHeaders(),
+      body: JSON.stringify(payload),
+    });
+    return parseResponse<ProjectImageAsset>(response);
+  }
+
+  async editProjectImage(imageId: string, prompt: string, projectId = ''): Promise<ProjectImageAsset> {
+    const response = await fetch(
+      addProjectQuery(`${this.baseUrl}${PROJECT_IMAGES_ENDPOINT}/${encodeURIComponent(imageId)}/edit`, projectId),
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: JSON.stringify({ prompt }),
+      },
+    );
+    return parseResponse<ProjectImageAsset>(response);
+  }
+
+  async rollbackProjectImage(imageId: string, projectId = ''): Promise<ProjectImageAsset> {
+    const response = await fetch(
+      addProjectQuery(`${this.baseUrl}${PROJECT_IMAGES_ENDPOINT}/${encodeURIComponent(imageId)}/rollback`, projectId),
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: '{}',
+      },
+    );
+    return parseResponse<ProjectImageAsset>(response);
+  }
+
+  async redoProjectImage(imageId: string, projectId = ''): Promise<ProjectImageAsset> {
+    const response = await fetch(
+      addProjectQuery(`${this.baseUrl}${PROJECT_IMAGES_ENDPOINT}/${encodeURIComponent(imageId)}/redo`, projectId),
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: '{}',
+      },
+    );
+    return parseResponse<ProjectImageAsset>(response);
+  }
+
+  async uploadProjectImage(file: File, name = '', projectId = '', description = ''): Promise<ProjectImageAsset> {
+    const form = new FormData();
+    form.append('file', file);
+    if (name.trim()) {
+      form.append('name', name.trim());
+    }
+    if (description.trim()) {
+      form.append('description', description.trim());
+    }
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${PROJECT_IMAGES_ENDPOINT}/upload`, projectId), {
+      method: 'POST',
+      body: form,
+      headers: {
+        Accept: 'application/json',
+      },
+    });
+    return parseResponse<ProjectImageAsset>(response);
+  }
+
+  async updateProjectImageMetadata(
+    imageId: string,
+    payload: { name?: string; description?: string },
+    projectId = '',
+  ): Promise<ProjectImageAsset> {
+    const response = await fetch(
+      addProjectQuery(`${this.baseUrl}${PROJECT_IMAGES_ENDPOINT}/${encodeURIComponent(imageId)}`, projectId),
+      {
+        method: 'PATCH',
+        headers: buildHeaders(),
+        body: JSON.stringify(payload),
+      },
+    );
+    return parseResponse<ProjectImageAsset>(response);
+  }
+
+  getProjectImageDownloadUrl(imageId: string, projectId = '', versionId = ''): string {
+    const path = `${this.baseUrl}${PROJECT_IMAGES_ENDPOINT}/${encodeURIComponent(imageId)}/download`;
+    const withProject = addProjectQuery(path, projectId);
+    if (!versionId.trim()) {
+      return withProject;
+    }
+    return `${withProject}${withProject.includes('?') ? '&' : '?'}versionId=${encodeURIComponent(versionId.trim())}`;
   }
 }

@@ -38,6 +38,7 @@ import {
   type TaskFlowDiagram,
   type ProjectSummary,
   type ProjectSettings,
+  type ProjectImageAsset,
 } from './services/projectSessionService';
 import ProjectSettingsPanel from './components/ProjectSettingsPanel.vue';
 
@@ -254,7 +255,19 @@ const cssGenerationError = ref('');
 const cssGenerationHistory = ref<CssGenerationHistoryEntry[]>([]);
 const cssGenerationRedoStack = ref<string[]>([]);
 const cssGenerationConversation = ref<GenerationMessage[]>([]);
-type PrimaryNav = 'builder' | 'flows' | 'execution' | 'components' | 'library' | 'settings';
+const projectImages = ref<ProjectImageAsset[]>([]);
+const isLoadingProjectImages = ref(false);
+const isGeneratingProjectImage = ref(false);
+const isUploadingProjectImage = ref(false);
+const imageGenerationPrompt = ref('');
+const imageEditPrompt = ref('');
+const imageNameInput = ref('');
+const imageDescriptionInput = ref('');
+const imageGenerationWidth = ref(1024);
+const imageGenerationAspect = ref<'1:1' | '2:3' | '3:2'>('1:1');
+const imagePreviewMaxHeight = ref(420);
+const selectedProjectImageId = ref('');
+type PrimaryNav = 'builder' | 'flows' | 'execution' | 'components' | 'images' | 'settings';
 type EditorWorkspaceTab = 'canvas' | 'data' | 'pug' | 'css' | 'states';
 type FlowWorkspaceTab = 'canvas' | 'data' | 'states';
 
@@ -1371,6 +1384,11 @@ function navigateToPlaceholderNav(nav: Exclude<PrimaryNav, 'builder' | 'flows' |
   primaryNav.value = nav;
 }
 
+function navigateToImages() {
+  primaryNav.value = 'images';
+  void loadProjectImages();
+}
+
 async function navigateToSettings() {
   primaryNav.value = 'settings';
   await loadProjectSettings();
@@ -1415,11 +1433,197 @@ async function onProjectSelectChange() {
   isSessionLoading.value = true;
   try {
     await loadProjectById(targetProjectId);
+    await loadProjectImages();
   } catch (_error) {
     message.value = 'No se pudo cargar el proyecto seleccionado.';
   } finally {
     isSessionLoading.value = false;
   }
+}
+
+const selectedProjectImage = computed(() => (
+  projectImages.value.find((image) => image.id === selectedProjectImageId.value) ?? null
+));
+
+const imageGenerationHeight = computed(() => {
+  const width = Math.max(128, Math.min(4096, Number(imageGenerationWidth.value) || 1024));
+  if (imageGenerationAspect.value === '2:3') {
+    return Math.round(width * 1.5);
+  }
+  if (imageGenerationAspect.value === '3:2') {
+    return Math.max(128, Math.round(width * (2 / 3)));
+  }
+  return width;
+});
+
+watch(selectedProjectImage, (image) => {
+  if (!image) {
+    return;
+  }
+  imageNameInput.value = image.name;
+  imageDescriptionInput.value = image.description ?? '';
+});
+
+function useSelectedImageInPrompt() {
+  const image = selectedProjectImage.value;
+  if (!image) {
+    return;
+  }
+  const snippet = `Referencia visual proyecto: ${image.name} -> ${image.currentImageUrl}`;
+  promptText.value = [promptText.value.trim(), snippet].filter(Boolean).join('\n');
+  message.value = `Referencia de imagen "${image.name}" agregada al prompt.`;
+}
+
+async function loadProjectImages() {
+  const projectId = activeProjectId.value.trim();
+  if (!projectId) {
+    projectImages.value = [];
+    selectedProjectImageId.value = '';
+    return;
+  }
+  isLoadingProjectImages.value = true;
+  try {
+    const items = await sessionService.listProjectImages(projectId);
+    projectImages.value = items;
+    if (!selectedProjectImageId.value && items.length > 0) {
+      selectedProjectImageId.value = items[0]?.id ?? '';
+    }
+  } catch (_error) {
+    message.value = 'No se pudieron cargar las imágenes del proyecto.';
+  } finally {
+    isLoadingProjectImages.value = false;
+  }
+}
+
+async function onGenerateProjectImage() {
+  const prompt = imageGenerationPrompt.value.trim();
+  if (!prompt) {
+    message.value = 'Debes escribir un prompt para generar la imagen.';
+    return;
+  }
+  isGeneratingProjectImage.value = true;
+  try {
+    const width = Math.max(128, Math.min(4096, Number(imageGenerationWidth.value) || 1024));
+    const height = Math.max(128, Math.min(4096, Number(imageGenerationHeight.value) || 1024));
+    const image = await sessionService.generateProjectImage({
+      prompt,
+      name: imageNameInput.value.trim(),
+      description: imageDescriptionInput.value.trim(),
+      imageSize: `${width}x${height}`,
+    }, activeProjectId.value.trim());
+    await loadProjectImages();
+    selectedProjectImageId.value = image.id;
+    imageGenerationPrompt.value = '';
+    imageNameInput.value = '';
+    imageDescriptionInput.value = '';
+    message.value = 'Imagen generada y guardada en el proyecto.';
+  } catch (_error) {
+    message.value = 'No se pudo generar la imagen.';
+  } finally {
+    isGeneratingProjectImage.value = false;
+  }
+}
+
+async function onUploadProjectImage(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+  if (!file) {
+    return;
+  }
+  isUploadingProjectImage.value = true;
+  try {
+    const image = await sessionService.uploadProjectImage(
+      file,
+      imageNameInput.value.trim(),
+      activeProjectId.value.trim(),
+      imageDescriptionInput.value.trim(),
+    );
+    await loadProjectImages();
+    selectedProjectImageId.value = image.id;
+    imageNameInput.value = '';
+    imageDescriptionInput.value = '';
+    message.value = 'Imagen cargada y guardada en el proyecto.';
+  } catch (_error) {
+    message.value = 'No se pudo cargar la imagen.';
+  } finally {
+    isUploadingProjectImage.value = false;
+    target.value = '';
+  }
+}
+
+async function onSaveSelectedImageMetadata() {
+  const image = selectedProjectImage.value;
+  if (!image) {
+    return;
+  }
+  try {
+    await sessionService.updateProjectImageMetadata(
+      image.id,
+      {
+        name: imageNameInput.value.trim() || image.name,
+        description: imageDescriptionInput.value.trim(),
+      },
+      activeProjectId.value.trim(),
+    );
+    await loadProjectImages();
+    message.value = 'Descripción de imagen actualizada.';
+  } catch (_error) {
+    message.value = 'No se pudo actualizar la descripción.';
+  }
+}
+
+async function onEditSelectedProjectImage() {
+  const image = selectedProjectImage.value;
+  const prompt = imageEditPrompt.value.trim();
+  if (!image || !prompt) {
+    message.value = 'Selecciona una imagen y escribe el prompt de edición.';
+    return;
+  }
+  isGeneratingProjectImage.value = true;
+  try {
+    await sessionService.editProjectImage(image.id, prompt, activeProjectId.value.trim());
+    await loadProjectImages();
+    imageEditPrompt.value = '';
+    message.value = 'Imagen actualizada con IA.';
+  } catch (_error) {
+    message.value = 'No se pudo editar la imagen.';
+  } finally {
+    isGeneratingProjectImage.value = false;
+  }
+}
+
+async function onRollbackSelectedImage() {
+  const image = selectedProjectImage.value;
+  if (!image) {
+    return;
+  }
+  try {
+    await sessionService.rollbackProjectImage(image.id, activeProjectId.value.trim());
+    await loadProjectImages();
+  } catch (_error) {
+    message.value = 'No se pudo aplicar rollback.';
+  }
+}
+
+async function onRedoSelectedImage() {
+  const image = selectedProjectImage.value;
+  if (!image) {
+    return;
+  }
+  try {
+    await sessionService.redoProjectImage(image.id, activeProjectId.value.trim());
+    await loadProjectImages();
+  } catch (_error) {
+    message.value = 'No se pudo aplicar redo.';
+  }
+}
+
+function downloadSelectedImage() {
+  const image = selectedProjectImage.value;
+  if (!image) {
+    return;
+  }
+  window.open(sessionService.getProjectImageDownloadUrl(image.id, activeProjectId.value.trim()), '_blank', 'noopener,noreferrer');
 }
 
 async function onCreateProjectClick() {
@@ -1433,6 +1637,7 @@ async function onCreateProjectClick() {
     await loadProjects();
     activeProjectId.value = created.id;
     await loadProjectById(created.id);
+    await loadProjectImages();
     message.value = 'Proyecto creado.';
   } catch (_error) {
     message.value = 'No se pudo crear el proyecto.';
@@ -1481,6 +1686,7 @@ async function onDeleteProjectClick() {
     if (nextProject) {
       activeProjectId.value = nextProject;
       await loadProjectById(nextProject);
+      await loadProjectImages();
     }
     message.value = 'Proyecto eliminado.';
   } catch (_error) {
@@ -1564,6 +1770,14 @@ function buildGenerationContextForAI() {
     if (settings.generationContext?.trim()) {
       projectContext.additionalContext = settings.generationContext.trim();
     }
+  }
+
+  const imageRefs = projectImages.value
+    .map((image) => `${image.name}: ${image.currentImageUrl}`)
+    .slice(0, 8);
+  if (imageRefs.length > 0) {
+    const currentAdditional = typeof projectContext.additionalContext === 'string' ? projectContext.additionalContext : '';
+    projectContext.additionalContext = `${currentAdditional}\nProject image references:\n${imageRefs.join('\n')}`.trim();
   }
 
   return projectContext;
@@ -1958,6 +2172,7 @@ onMounted(async () => {
     await loadProjects();
     const hashProjectId = parseActiveProjectFromHash(window.location.hash);
     await restoreLastSession(hashProjectId);
+    await loadProjectImages();
     await hydrateFlowDiagramFromSession();
     if (parseHashRoute(window.location.hash).routeType !== 'unknown') {
       await onHashChange();
@@ -3698,11 +3913,11 @@ function onPromptKeydown(event: KeyboardEvent) {
           <button
             type="button"
             class="app-rail-item"
-            :class="{ 'app-rail-item--active': primaryNav === 'library' }"
-            @click="navigateToPlaceholderNav('library')"
+            :class="{ 'app-rail-item--active': primaryNav === 'images' }"
+            @click="navigateToImages()"
           >
-            <i class="bi bi-collection" aria-hidden="true"></i>
-            <span class="app-rail-label">Biblioteca</span>
+            <i class="bi bi-image" aria-hidden="true"></i>
+            <span class="app-rail-label">Imágenes IA</span>
           </button>
           <button
             type="button"
@@ -4585,15 +4800,64 @@ function onPromptKeydown(event: KeyboardEvent) {
       />
     </section>
 
+    <section v-else-if="primaryNav === 'images'" class="canvas-wrap">
+      <article class="canvas-surface" style="padding: 1rem; overflow: auto;">
+        <h2>Administrador de imágenes IA</h2>
+        <p>Las imágenes se guardan por proyecto y pueden reutilizarse en prompts.</p>
+        <div class="screen-toolbar" style="margin-bottom: 0.75rem;">
+          <input v-model="imageNameInput" type="text" class="screen-select" placeholder="Nombre (opcional)" />
+          <input v-model="imageDescriptionInput" type="text" class="screen-select" placeholder="Descripción de la imagen" />
+          <input v-model="imageGenerationPrompt" type="text" class="screen-select" placeholder="Prompt para generar imagen" />
+          <input v-model.number="imageGenerationWidth" type="number" min="128" max="4096" class="screen-select" placeholder="Ancho" />
+          <select v-model="imageGenerationAspect" class="screen-select" title="Proporción">
+            <option value="1:1">1:1 (cuadrada)</option>
+            <option value="2:3">2:3 (vertical)</option>
+            <option value="3:2">3:2 (horizontal)</option>
+          </select>
+          <input :value="imageGenerationHeight" type="number" class="screen-select" placeholder="Alto" readonly />
+          <button type="button" class="screen-action-btn" :disabled="isGeneratingProjectImage" @click="onGenerateProjectImage">
+            {{ isGeneratingProjectImage ? 'Generando...' : 'Generar' }}
+          </button>
+          <label class="screen-action-btn" style="margin: 0;">
+            {{ isUploadingProjectImage ? 'Subiendo...' : 'Cargar' }}
+            <input type="file" accept="image/*" style="display:none" :disabled="isUploadingProjectImage" @change="onUploadProjectImage" />
+          </label>
+        </div>
+        <div class="screen-toolbar" style="margin-bottom: 1rem;">
+          <select v-model="selectedProjectImageId" class="screen-select">
+            <option value="">Selecciona imagen</option>
+            <option v-for="image in projectImages" :key="image.id" :value="image.id">{{ image.name }}</option>
+          </select>
+          <input v-model="imageEditPrompt" type="text" class="screen-select" placeholder="Prompt para editar/mejorar imagen" />
+          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId || isGeneratingProjectImage" @click="onEditSelectedProjectImage">Editar IA</button>
+          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId" @click="onSaveSelectedImageMetadata">Guardar descripción</button>
+          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImage?.rollbackAvailable" @click="onRollbackSelectedImage">Rollback</button>
+          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImage?.redoAvailable" @click="onRedoSelectedImage">Redo</button>
+          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId" @click="downloadSelectedImage">Descargar</button>
+          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId" @click="useSelectedImageInPrompt">Usar en prompt</button>
+        </div>
+        <p v-if="isLoadingProjectImages">Cargando imágenes...</p>
+        <div v-if="selectedProjectImage?.currentImageUrl">
+          <div class="screen-toolbar" style="margin-bottom: 0.5rem;">
+            <label>Alto máximo preview</label>
+            <input v-model.number="imagePreviewMaxHeight" type="number" min="120" max="1200" class="screen-select" />
+          </div>
+          <img
+            :src="selectedProjectImage.currentImageUrl"
+            :alt="selectedProjectImage.name"
+            :style="{ maxWidth: '100%', height: 'auto', maxHeight: `${imagePreviewMaxHeight}px`, border: '1px solid #e5e7eb', borderRadius: '8px', objectFit: 'contain' }"
+          />
+          <p style="margin-top: 0.25rem;">{{ selectedProjectImage.description }}</p>
+          <p style="margin-top: 0.5rem;">Versión actual: {{ selectedProjectImage.currentVersionId }} · Total versiones: {{ selectedProjectImage.versions.length }}</p>
+        </div>
+      </article>
+    </section>
+
     <section v-else class="canvas-wrap nav-placeholder">
       <div class="nav-placeholder-inner">
         <template v-if="primaryNav === 'components'">
           <h2 class="nav-placeholder-title">Componentes</h2>
           <p class="nav-placeholder-text">Exploración del catálogo BootstrapVue y packs extra. Sección en preparación.</p>
-        </template>
-        <template v-else-if="primaryNav === 'library'">
-          <h2 class="nav-placeholder-title">Biblioteca</h2>
-          <p class="nav-placeholder-text">Inspiración y plantillas reutilizables. Sección en preparación.</p>
         </template>
         <button type="button" class="screen-action-btn nav-placeholder-back" @click="navigateToBuilder()">Volver al builder</button>
       </div>

@@ -680,6 +680,8 @@ func main() {
 		writePlainText(w, http.StatusOK, output)
 	}))
 
+	registerProjectImageRoutes(mux, sessionStore)
+
 	addr := strings.TrimSpace(os.Getenv("PORT"))
 	if addr == "" {
 		addr = ":3000"
@@ -854,18 +856,18 @@ func muxWithCORS(base *http.ServeMux) http.Handler {
 }
 
 type generationContext struct {
-	Locale               string   `json:"locale"`
-	Theme                string   `json:"theme"`
-	EnabledPacks         []string `json:"enabledPacks"`
-	TargetDensity        string   `json:"targetDensity"`
+	Locale               string               `json:"locale"`
+	Theme                string               `json:"theme"`
+	EnabledPacks         []string             `json:"enabledPacks"`
+	TargetDensity        string               `json:"targetDensity"`
 	FlowTasks            []generationFlowTask `json:"flowTasks"`
-	DesignStyle          string `json:"designStyle,omitempty"`
-	ColorPalette         string `json:"colorPalette,omitempty"`
-	BrandGuidelines      string `json:"brandGuidelines,omitempty"`
-	ComponentExamples    string `json:"componentExamples,omitempty"`
-	TechnicalConstraints string `json:"technicalConstraints,omitempty"`
-	LayoutPreferences    string `json:"layoutPreferences,omitempty"`
-	AdditionalContext    string `json:"additionalContext,omitempty"`
+	DesignStyle          string               `json:"designStyle,omitempty"`
+	ColorPalette         string               `json:"colorPalette,omitempty"`
+	BrandGuidelines      string               `json:"brandGuidelines,omitempty"`
+	ComponentExamples    string               `json:"componentExamples,omitempty"`
+	TechnicalConstraints string               `json:"technicalConstraints,omitempty"`
+	LayoutPreferences    string               `json:"layoutPreferences,omitempty"`
+	AdditionalContext    string               `json:"additionalContext,omitempty"`
 }
 
 type generationFlowTask struct {
@@ -883,11 +885,11 @@ type generationRequest struct {
 }
 
 type dataGenerationRequest struct {
-	Prompt    string                `json:"prompt"`
-	Context   *generationContext    `json:"context"`
-	CurrentPug string               `json:"currentPug"`
-	CurrentData interface{}         `json:"currentData"`
-	Messages  []cerebrasChatMessage `json:"messages"`
+	Prompt      string                `json:"prompt"`
+	Context     *generationContext    `json:"context"`
+	CurrentPug  string                `json:"currentPug"`
+	CurrentData interface{}           `json:"currentData"`
+	Messages    []cerebrasChatMessage `json:"messages"`
 }
 
 type pugGenerationRequest struct {
@@ -922,19 +924,19 @@ type generationResponse struct {
 
 type dataGenerationResponse struct {
 	Data     interface{}           `json:"data"`
-	Messages []cerebrasChatMessage  `json:"messages,omitempty"`
+	Messages []cerebrasChatMessage `json:"messages,omitempty"`
 }
 
 type pugGenerationResponse struct {
 	Pug      string                `json:"pug"`
-	Messages []cerebrasChatMessage  `json:"messages,omitempty"`
+	Messages []cerebrasChatMessage `json:"messages,omitempty"`
 }
 
 type uxEvaluatorRequest struct {
-	Pug                    string   `json:"pug"`
-	Css                    string   `json:"css"`
-	Data                   interface{} `json:"data"`
-	PreviousRecommendations []string `json:"previousRecommendations"`
+	Pug                     string      `json:"pug"`
+	Css                     string      `json:"css"`
+	Data                    interface{} `json:"data"`
+	PreviousRecommendations []string    `json:"previousRecommendations"`
 }
 
 type cerebrasChatMessage struct {
@@ -943,11 +945,11 @@ type cerebrasChatMessage struct {
 }
 
 type cerebrasChatPayload struct {
-	Model          string                  `json:"model"`
-	Messages       []cerebrasChatMessage   `json:"messages"`
-	ResponseFormat *cerebrasResponseFormat `json:"response_format,omitempty"`
-	ReasoningEffort *string               `json:"reasoning_effort,omitempty"`
-	Temperature     *float64              `json:"temperature,omitempty"`
+	Model           string                  `json:"model"`
+	Messages        []cerebrasChatMessage   `json:"messages"`
+	ResponseFormat  *cerebrasResponseFormat `json:"response_format,omitempty"`
+	ReasoningEffort *string                 `json:"reasoning_effort,omitempty"`
+	Temperature     *float64                `json:"temperature,omitempty"`
 }
 
 type cerebrasResponseFormat struct {
@@ -1443,16 +1445,16 @@ func callImageInspiration(ctx context.Context, input inspirationRequest) (genera
 }
 
 type imageGenerationPayload struct {
-	Model          string `json:"model"`
-	Prompt         string `json:"prompt"`
-	Size           string `json:"size"`
-	N              int    `json:"n"`
-	Quality        string `json:"quality,omitempty"`
-	Style          string `json:"style,omitempty"`
+	Model   string `json:"model"`
+	Prompt  string `json:"prompt"`
+	Size    string `json:"size"`
+	N       int    `json:"n"`
+	Quality string `json:"quality,omitempty"`
+	Style   string `json:"style,omitempty"`
 }
 
 type googleImageGenerationPayload struct {
-	Instances  []googleImageInstance `json:"instances"`
+	Instances  []googleImageInstance  `json:"instances"`
 	Parameters *googleImageParameters `json:"parameters,omitempty"`
 }
 
@@ -1573,12 +1575,12 @@ func callImageGenerationOpenAI(
 	normalizedStyle := normalizeImageStyle(model, style)
 
 	payload := imageGenerationPayload{
-		Model:          model,
-		Prompt:         prompt,
-		Size:           size,
-		N:              n,
-		Quality:        normalizedQuality,
-		Style:          normalizedStyle,
+		Model:   model,
+		Prompt:  prompt,
+		Size:    size,
+		N:       n,
+		Quality: normalizedQuality,
+		Style:   normalizedStyle,
 	}
 
 	requestBody, err := json.Marshal(payload)
@@ -2039,17 +2041,17 @@ type visionInput struct {
 }
 
 type visionPrompt struct {
-	Role    string       `json:"role"`
+	Role    string        `json:"role"`
 	Content []visionInput `json:"content"`
 }
 
 type responsesRequest struct {
-	Model  string        `json:"model"`
-	Input  []visionPrompt `json:"input"`
+	Model string         `json:"model"`
+	Input []visionPrompt `json:"input"`
 }
 
 type geminiPart struct {
-	Text string          `json:"text,omitempty"`
+	Text       string            `json:"text,omitempty"`
 	InlineData *geminiInlineData `json:"inlineData,omitempty"`
 }
 
@@ -2059,7 +2061,7 @@ type geminiInlineData struct {
 }
 
 type geminiContent struct {
-	Role  string      `json:"role"`
+	Role  string       `json:"role"`
 	Parts []geminiPart `json:"parts"`
 }
 
@@ -2078,7 +2080,7 @@ type geminiVisionResponse struct {
 }
 
 type visionResponse struct {
-	OutputText string                  `json:"output_text"`
+	OutputText string `json:"output_text"`
 	Output     []struct {
 		Content []struct {
 			Type string `json:"type"`
@@ -2155,7 +2157,7 @@ func callVisionToCodeOpenAI(
 					Text: buildVisionPromptForImage(conversionPrompt, imagePrompt),
 				},
 				{
-					Type:    "input_image",
+					Type:     "input_image",
 					ImageURL: "data:image/png;base64," + imageBase64,
 				},
 			},
