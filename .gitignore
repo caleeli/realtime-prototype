@@ -1,6 +1,5 @@
 .env
 .env
 apps/api/cache/inspiration/images/
-apps/api/data/session-store.sqlite
+apps/api/data
 .semantic-code-mcp/
-apps/api/data/project-images
