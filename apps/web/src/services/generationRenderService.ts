@@ -2,11 +2,14 @@ import {
   defineComponent,
   h,
   markRaw,
+  reactive,
   type App,
   type DefineComponent,
   type VNode,
 } from 'vue';
+import * as VueRuntime from 'vue';
 import * as bootstrapVueNext from 'bootstrap-vue-next';
+import { compile } from '@vue/compiler-dom';
 
 import type {
   GenerationPipelineResult,
@@ -418,6 +421,22 @@ function parseScalar(value: string): string | number | boolean | null {
   return trimmed;
 }
 
+function tryEvaluateExpression(expression: string, context: PipelineScreenData): unknown {
+  const keys = Object.keys(context);
+  const values = keys.map((key) => context[key]);
+  try {
+    const evaluator = new Function(
+      ...keys,
+      '"use strict"; const window=undefined, document=undefined, globalThis=undefined, Function=undefined, eval=undefined; return (' +
+        expression +
+        ');',
+    );
+    return evaluator(...values);
+  } catch (_error) {
+    return undefined;
+  }
+}
+
 function resolveExpression(expression: string, context: PipelineScreenData): unknown {
   const value = expression.trim();
   if (value.length === 0) {
@@ -452,6 +471,11 @@ function resolveExpression(expression: string, context: PipelineScreenData): unk
   const maybePath = getPathValue(context, value);
   if (maybePath !== undefined) {
     return maybePath;
+  }
+
+  const maybeEvaluated = tryEvaluateExpression(value, context);
+  if (maybeEvaluated !== undefined) {
+    return maybeEvaluated;
   }
 
   return value;
@@ -916,6 +940,71 @@ function sanitizeGeneratedCss(raw: string): string {
   return css;
 }
 
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;');
+}
+
+function serializeTemplateAttributes(attributes: Record<string, string | number | boolean>): string {
+  const pairs: string[] = [];
+  for (const [key, rawValue] of Object.entries(attributes)) {
+    if (rawValue === true) {
+      pairs.push(key);
+      continue;
+    }
+    if (rawValue === false || rawValue === null || rawValue === undefined) {
+      continue;
+    }
+    pairs.push(`${key}="${escapeHtmlAttribute(String(rawValue))}"`);
+  }
+  return pairs.length > 0 ? ` ${pairs.join(' ')}` : '';
+}
+
+function toTemplateHtml(
+  node: PugTemplateNode,
+  componentRegistry?: Record<string, DefineComponent>,
+): string {
+  if (isTextNode(node)) {
+    return escapeHtmlText(node.text);
+  }
+
+  if (isInterpolationNode(node)) {
+    return `{{ ${node.expression} }}`;
+  }
+
+  const normalizedNodeTag = normalizeTag(node.tag);
+  const bootstrapNodeTag = normalizeBootstrapVueTag(normalizedNodeTag);
+  const registered =
+    componentRegistry?.[normalizedNodeTag] ??
+    componentRegistry?.[bootstrapNodeTag] ??
+    componentRegistry?.[toPascalTag(bootstrapNodeTag)];
+  const tagName = registered ? bootstrapNodeTag : normalizedNodeTag;
+
+  const attrs = serializeTemplateAttributes(node.attributes);
+  const children = node.children.map((child) => toTemplateHtml(child, componentRegistry)).join('');
+
+  if (BASE_VOID_TAGS.has(tagName) && children.length === 0) {
+    return `<${tagName}${attrs} />`;
+  }
+
+  return `<${tagName}${attrs}>${children}</${tagName}>`;
+}
+
+function toTemplateHtmlFromTree(
+  tree: GenerationPipelineResult['template'],
+  componentRegistry?: Record<string, DefineComponent>,
+): string {
+  return tree.children.map((node) => toTemplateHtml(node, componentRegistry)).join('');
+}
+
 function buildGeneratedScreenVNodes(
   styleContent: string,
   styleId: string,
@@ -953,6 +1042,17 @@ function buildGeneratedScreenVNodes(
 
 function isPugTreeEmpty(tree: GenerationPipelineResult['template']): boolean {
   return tree.children.length === 0;
+}
+
+function compileTemplateToRender(templateHtml: string) {
+  const wrapped = `<div class="generated-screen">${templateHtml}</div>`;
+  const compiled = compile(wrapped, {
+    mode: 'function',
+    hoistStatic: true,
+    prefixIdentifiers: false,
+  });
+  const factory = new Function('Vue', compiled.code) as (vueRuntime: typeof VueRuntime) => (...args: unknown[]) => VNode;
+  return factory(VueRuntime);
 }
 
 export class GenerationRenderService {
@@ -1033,30 +1133,51 @@ export class GenerationRenderService {
     const fallbackHtml = sanitizeVueSfcTemplate(output.sourcePug);
     const renderNodesWithStyle = (value: VNode | string | Array<VNode | string>) =>
       buildGeneratedScreenVNodes(style, this.styleId, value);
+    const templateHtml = toTemplateHtmlFromTree(output.template, componentRegistry);
 
-    const component = defineComponent({
-      name: 'GeneratedPipelineScreen',
-      components: {
-        ...registry.localComponents,
-        ...bootstrapRegistry,
-      },
-      setup() {
-        if (isPugTreeEmpty(output.template) && fallbackHtml) {
-          return () => {
-            const fallback = sanitizeVueSfcTemplate(fallbackHtml);
-            return h('div', { class: 'generated-screen' }, renderNodesWithStyle(fallback));
-          };
-        }
-
-        const children = collectChildren(output.template, context, componentRegistry);
-        return () => {
-          if (typeof children === 'string') {
-            return h('div', { class: 'generated-screen' }, renderNodesWithStyle(children));
+    let component: ReturnType<typeof defineComponent>;
+    try {
+      const compiledRender = compileTemplateToRender(templateHtml);
+      component = defineComponent({
+        name: 'GeneratedPipelineScreen',
+        components: {
+          ...registry.localComponents,
+          ...bootstrapRegistry,
+        },
+        setup() {
+          const state = reactive(context as Record<string, unknown>);
+          return state;
+        },
+        render() {
+          const vm = this as Record<string, unknown>;
+          return h('div', {}, renderNodesWithStyle(compiledRender(vm, [])));
+        },
+      });
+    } catch (_error) {
+      component = defineComponent({
+        name: 'GeneratedPipelineScreen',
+        components: {
+          ...registry.localComponents,
+          ...bootstrapRegistry,
+        },
+        setup() {
+          if (isPugTreeEmpty(output.template) && fallbackHtml) {
+            return () => {
+              const fallback = sanitizeVueSfcTemplate(fallbackHtml);
+              return h('div', { class: 'generated-screen' }, renderNodesWithStyle(fallback));
+            };
           }
-          return h('div', { class: 'generated-screen' }, renderNodesWithStyle(children));
-        };
-      },
-    });
+
+          const children = collectChildren(output.template, context, componentRegistry);
+          return () => {
+            if (typeof children === 'string') {
+              return h('div', { class: 'generated-screen' }, renderNodesWithStyle(children));
+            }
+            return h('div', { class: 'generated-screen' }, renderNodesWithStyle(children));
+          };
+        },
+      });
+    }
 
     return {
       component,

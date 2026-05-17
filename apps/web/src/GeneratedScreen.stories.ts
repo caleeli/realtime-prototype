@@ -472,5 +472,98 @@ export const CoursesTableWithModal: Story = {
   },
 };
 
+export const OddsExpressionInterpolation: Story = {
+  args: {
+    ...meta.args,
+    pug: [
+      'div.odds-board',
+      "  div.match-card(v-for='match in filteredMatches' :key='match.id')",
+      "    h4 {{ match.home.name }} vs {{ match.away.name }}",
+      "    button.btn.btn-outline-primary(v-for='odd in match.odds' :key='odd.type' :class=\"{'active-odd': odd.selected}\") {{ odd.type === 'home' ? match.home.name : odd.type === 'away' ? match.away.name : 'Empate' }} {{ odd.value.toFixed(2) }}",
+    ].join('\n'),
+    css: [
+      '.odds-board {',
+      '  display: grid;',
+      '  gap: 0.75rem;',
+      '}',
+      '.match-card {',
+      '  padding: 0.75rem;',
+      '  border: 1px solid #dfe3eb;',
+      '  border-radius: 10px;',
+      '}',
+      '.match-card h4 {',
+      '  margin-bottom: 0.5rem;',
+      '}',
+      '.match-card .btn {',
+      '  margin-right: 0.5rem;',
+      '  margin-bottom: 0.5rem;',
+      '}',
+      '.match-card .active-odd {',
+      '  border-width: 2px;',
+      '}',
+    ].join('\n'),
+    data: {
+      filter: 'live',
+      filteredMatches: [
+        {
+          away: { name: 'Canada' },
+          betStatus: { label: 'Ganaste', variant: 'success' },
+          home: { name: 'Argentina' },
+          id: 1,
+          odds: [
+            { selected: false, type: 'home', value: 2.1 },
+            { selected: false, type: 'draw', value: 3.4 },
+            { selected: false, type: 'away', value: 3.5 },
+          ],
+          status: 'live',
+          time: 'EN VIVO 2-1',
+        },
+        {
+          away: { name: 'Alemania' },
+          betStatus: { label: 'Empate', variant: 'warning' },
+          home: { name: 'Francia' },
+          id: 2,
+          odds: [
+            { selected: false, type: 'home', value: 2.1 },
+            { selected: false, type: 'draw', value: 3.1 },
+            { selected: false, type: 'away', value: 3 },
+          ],
+          status: 'closed',
+          time: 'EN VIVO 2-2',
+        },
+        {
+          away: { name: 'México' },
+          betStatus: { label: 'Abierto', variant: 'success' },
+          home: { name: 'Brasil' },
+          id: 3,
+          odds: [
+            { selected: true, type: 'home', value: 1.5 },
+            { selected: false, type: 'draw', value: 3.42 },
+            { selected: false, type: 'away', value: 3.5 },
+          ],
+          status: 'open',
+          time: 'HOY 19:00',
+        },
+      ],
+      matches: [],
+      user: {
+        avatar: 'https://randomuser.me/api/portraits/men/32.jpg',
+        balance: 125,
+        betsCount: 4,
+        name: 'Alex',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const root = canvasElement as HTMLElement;
+    const text = root.textContent ?? '';
+
+    expect(!text.includes("odd.type === 'home' ?"), 'La expresión ternaria se renderizó literal en lugar de evaluarse.');
+    expect(text.includes('Argentina 2.10'), 'No se evaluó correctamente el odd de home.');
+    expect(text.includes('Empate 3.40'), 'No se evaluó correctamente el odd de empate.');
+    expect(text.includes('Canada 3.50'), 'No se evaluó correctamente el odd de away.');
+  },
+};
+
 type Story = StoryObj<StoryArgs>;
 export default meta;
