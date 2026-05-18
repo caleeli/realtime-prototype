@@ -3257,6 +3257,28 @@ async function onCreateScreenClick() {
   }
 }
 
+async function onDuplicateScreenClick() {
+  const targetScreenId = activeScreenId.value.trim();
+  if (!targetScreenId || isSessionLoading.value || isSaving.value || isGenerating.value) {
+    return;
+  }
+  isSessionLoading.value = true;
+  try {
+    const duplicated = await sessionService.duplicateScreen(targetScreenId, activeProjectId.value);
+    const session = await refreshScreensFromSession();
+    screens.value = session.screens || screens.value;
+    activeScreenId.value = duplicated.id;
+    await openScreen(duplicated.id, { force: true });
+    isScreenDirty.value = false;
+    syncFlowTasksToScreens(screens.value);
+    message.value = 'Pantalla duplicada.';
+  } catch (_error) {
+    message.value = 'No se pudo duplicar la pantalla.';
+  } finally {
+    isSessionLoading.value = false;
+  }
+}
+
 async function onDeleteScreenClick() {
   const targetScreenId = activeScreenId.value.trim();
   if (!targetScreenId || isSessionLoading.value || isSaving.value || isGenerating.value) {
@@ -4194,6 +4216,15 @@ function onPromptKeydown(event: KeyboardEvent) {
             <button type="button" class="screen-action-btn" :disabled="isSessionLoading || isSaving" @click="onCreateScreenClick">
               <i class="bi bi-plus-lg" aria-hidden="true"></i>
               Nueva
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isSessionLoading || isSaving || !activeScreenId"
+              @click="onDuplicateScreenClick"
+            >
+              <i class="bi bi-files" aria-hidden="true"></i>
+              Duplicar
             </button>
             <button
               type="button"

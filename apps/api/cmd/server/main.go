@@ -405,6 +405,24 @@ func main() {
 				return
 			}
 
+			if len(parts) == 2 && parts[1] == "duplicate" {
+				if r.Method != http.MethodPost {
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				screen, err := sessionStore.duplicateScreen(r.Context(), project.ID, screenID)
+				if err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						writeJSON(w, http.StatusNotFound, map[string]string{"error": "screen not found"})
+						return
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				writeJSON(w, http.StatusCreated, screen)
+				return
+			}
+
 			if r.Method == http.MethodDelete && len(parts) == 1 {
 				if err := sessionStore.deleteScreen(r.Context(), project.ID, screenID); err != nil {
 					if errors.Is(err, os.ErrNotExist) {

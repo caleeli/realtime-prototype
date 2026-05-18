@@ -278,6 +278,18 @@ export class ProjectSessionService {
     await parseResponse<Record<string, string>>(response);
   }
 
+  async duplicateScreen(screenId: string, projectId = ''): Promise<CreateScreenResult> {
+    const response = await fetch(
+      addProjectQuery(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}/duplicate`, projectId),
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: '{}',
+      },
+    );
+    return parseResponse<CreateScreenResult>(response);
+  }
+
   async loadLatestState(screenId: string, projectId = ''): Promise<SessionScreenState | null> {
     const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}/state/latest`, projectId), {
       headers: buildHeaders(),

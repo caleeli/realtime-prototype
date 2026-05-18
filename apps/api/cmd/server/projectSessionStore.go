@@ -17,6 +17,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+type queryRowContextProvider interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 const (
 	defaultSessionDatabasePath = "data/session-store.sqlite"
 	defaultProjectID           = "project-default"
@@ -574,23 +578,9 @@ func (s *sessionProjectStore) createScreen(ctx context.Context, projectID, name 
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM screens WHERE project_id = ? AND is_deleted = 0;`, projectID).Scan(&existing); err != nil {
 		return sessionScreenSummary{}, err
 	}
-	name = strings.TrimSpace(name)
+	name = s.nextAvailableScreenName(ctx, projectID, name, existing+1)
 	if name == "" {
-		name = fmt.Sprintf("Pantalla %d", existing+1)
-	} else {
-		const countByNameQuery = `SELECT COUNT(1) FROM screens WHERE project_id = ? AND is_deleted = 0 AND name = ?;`
-		currentName := name
-		for i := 1; ; i++ {
-			var conflicts int
-			if err := s.db.QueryRowContext(ctx, countByNameQuery, projectID, currentName).Scan(&conflicts); err != nil {
-				return sessionScreenSummary{}, err
-			}
-			if conflicts == 0 {
-				break
-			}
-			currentName = fmt.Sprintf("%s (%d)", name, i)
-		}
-		name = currentName
+		return sessionScreenSummary{}, fmt.Errorf("could not resolve screen name")
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -655,6 +645,206 @@ func (s *sessionProjectStore) createScreen(ctx context.Context, projectID, name 
 		IsActive:  true,
 		UpdatedAt: now,
 	}, nil
+}
+
+func (s *sessionProjectStore) nextAvailableScreenName(ctx context.Context, projectID, requestedName string, fallbackIndex int) string {
+	return nextAvailableScreenNameFromQuery(ctx, s.db, projectID, requestedName, fallbackIndex)
+}
+
+func nextAvailableScreenNameFromQuery(ctx context.Context, queryer queryRowContextProvider, projectID, requestedName string, fallbackIndex int) string {
+	baseName := strings.TrimSpace(requestedName)
+	if baseName == "" {
+		baseName = fmt.Sprintf("Pantalla %d", fallbackIndex)
+	}
+	const countByNameQuery = `SELECT COUNT(1) FROM screens WHERE project_id = ? AND is_deleted = 0 AND name = ?;`
+	currentName := baseName
+	for i := 1; ; i++ {
+		var conflicts int
+		if err := queryer.QueryRowContext(ctx, countByNameQuery, projectID, currentName).Scan(&conflicts); err != nil {
+			return ""
+		}
+		if conflicts == 0 {
+			return currentName
+		}
+		currentName = fmt.Sprintf("%s (%d)", baseName, i)
+	}
+}
+
+func (s *sessionProjectStore) duplicateScreen(ctx context.Context, projectID, sourceScreenID string) (sessionScreenSummary, error) {
+	var created sessionScreenSummary
+	err := s.withWriteRetry(ctx, func() error {
+		tx, txErr := s.db.BeginTx(ctx, nil)
+		if txErr != nil {
+			return txErr
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
+
+		var sourceScreenName string
+		var sourceBelongs int
+		if txErr = tx.QueryRowContext(
+			ctx,
+			`SELECT COUNT(1), COALESCE(MAX(name), '') FROM screens WHERE id = ? AND project_id = ? AND is_deleted = 0;`,
+			sourceScreenID,
+			projectID,
+		).Scan(&sourceBelongs, &sourceScreenName); txErr != nil {
+			return txErr
+		}
+		if sourceBelongs == 0 {
+			return os.ErrNotExist
+		}
+
+		var sourceState screenStateRecord
+		txErr = tx.QueryRowContext(
+			ctx,
+			`SELECT id, screen_id, revision, screen_payload_json, conversation_json, recommendations_json, created_at
+			 FROM screen_states
+			 WHERE screen_id = ?
+			 ORDER BY revision DESC LIMIT 1;`,
+			sourceScreenID,
+		).Scan(
+			&sourceState.ID,
+			&sourceState.ScreenID,
+			&sourceState.Revision,
+			&sourceState.ScreenPayload,
+			&sourceState.Conversation,
+			&sourceState.Recommendations,
+			&sourceState.CreatedAt,
+		)
+		if txErr != nil && !errors.Is(txErr, sql.ErrNoRows) {
+			return txErr
+		}
+
+		payload := sessionPayload{
+			SourcePug: "",
+			CSS:       "",
+			Data:      json.RawMessage("{}"),
+			Messages:  []cerebrasChatMessage{},
+			Metadata:  nil,
+		}
+		if txErr == nil && strings.TrimSpace(sourceState.ScreenPayload) != "" {
+			_ = json.Unmarshal([]byte(sourceState.ScreenPayload), &payload)
+		}
+		if len(payload.Data) == 0 {
+			payload.Data = json.RawMessage("{}")
+		}
+
+		assistantResponsePayload := struct {
+			Pug  string          `json:"pug"`
+			CSS  string          `json:"css"`
+			Data json.RawMessage `json:"data"`
+		}{
+			Pug:  payload.SourcePug,
+			CSS:  payload.CSS,
+			Data: payload.Data,
+		}
+		assistantResponseBytes, marshalErr := json.Marshal(assistantResponsePayload)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		assistantContent := string(assistantResponseBytes)
+
+		condensedMessages := []cerebrasChatMessage{
+			{Role: "user", Content: "screen"},
+			{Role: "assistant", Content: assistantContent},
+		}
+		condensedConversation := []sessionChatMessage{
+			{Role: "user", Content: "screen"},
+			{Role: "assistant", Content: assistantContent},
+		}
+		payload.Messages = condensedMessages
+
+		payloadBytes, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		conversationBytes, marshalErr := json.Marshal(condensedConversation)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		recommendationsBytes, marshalErr := json.Marshal([]string{})
+		if marshalErr != nil {
+			return marshalErr
+		}
+
+		var existing int
+		if txErr = tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM screens WHERE project_id = ? AND is_deleted = 0;`, projectID).Scan(&existing); txErr != nil {
+			return txErr
+		}
+
+		duplicateName := strings.TrimSpace(sourceScreenName)
+		if duplicateName == "" {
+			duplicateName = "Pantalla"
+		}
+		duplicateName = fmt.Sprintf("%s (copia)", duplicateName)
+		duplicateName = nextAvailableScreenNameFromQuery(ctx, tx, projectID, duplicateName, existing+1)
+		if duplicateName == "" {
+			return fmt.Errorf("could not resolve duplicate screen name")
+		}
+
+		now := time.Now().UTC().Format(time.RFC3339)
+		duplicatedScreenID := newSessionID()
+		if _, txErr = tx.ExecContext(ctx, `UPDATE screens SET is_active = 0 WHERE project_id = ?;`, projectID); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`INSERT INTO screens (id, project_id, name, position, created_at, updated_at, is_active)
+			 VALUES (?, ?, ?, ?, ?, ?, 1);`,
+			duplicatedScreenID,
+			projectID,
+			duplicateName,
+			existing+1,
+			now,
+			now,
+		); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`INSERT INTO screen_states (screen_id, revision, screen_payload_json, conversation_json, recommendations_json, created_at)
+			 VALUES (?, 1, ?, ?, ?, ?);`,
+			duplicatedScreenID,
+			string(payloadBytes),
+			string(conversationBytes),
+			string(recommendationsBytes),
+			now,
+		); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`UPDATE projects SET active_screen_id = ?, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
+			duplicatedScreenID,
+			now,
+			now,
+			projectID,
+		); txErr != nil {
+			return txErr
+		}
+
+		if txErr = tx.Commit(); txErr != nil {
+			return txErr
+		}
+		committed = true
+		created = sessionScreenSummary{
+			ID:           duplicatedScreenID,
+			Name:         duplicateName,
+			Position:     existing + 1,
+			UpdatedAt:    now,
+			IsActive:     true,
+			LastRevision: 1,
+		}
+		return nil
+	})
+	if err != nil {
+		return sessionScreenSummary{}, err
+	}
+	return created, nil
 }
 
 func (s *sessionProjectStore) activateScreen(ctx context.Context, projectID, screenID string) error {
