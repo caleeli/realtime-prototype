@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -19,8 +19,10 @@ import (
 
 const (
 	defaultSessionDatabasePath = "data/session-store.sqlite"
-	defaultProjectID          = "project-default"
-	defaultTheme              = "bootstrap"
+	defaultProjectID           = "project-default"
+	defaultTheme               = "bootstrap"
+	sqliteBusyTimeout          = 5000
+	sqliteWriteRetryAttempts   = 4
 )
 
 var (
@@ -36,11 +38,11 @@ type sessionChatMessage struct {
 }
 
 type sessionPayload struct {
-	SourcePug string              `json:"sourcePug"`
-	CSS       string              `json:"css"`
-	Data      json.RawMessage     `json:"data"`
+	SourcePug string                `json:"sourcePug"`
+	CSS       string                `json:"css"`
+	Data      json.RawMessage       `json:"data"`
 	Messages  []cerebrasChatMessage `json:"messages"`
-	Metadata  json.RawMessage     `json:"metadata"`
+	Metadata  json.RawMessage       `json:"metadata"`
 }
 
 type flowTaskPosition struct {
@@ -49,10 +51,10 @@ type flowTaskPosition struct {
 }
 
 type flowDiagramTask struct {
-	ID       string          `json:"id"`
-	Name     string          `json:"name"`
-	ScreenID string          `json:"screenId"`
-	IsPopup  bool            `json:"isPopupTask"`
+	ID       string           `json:"id"`
+	Name     string           `json:"name"`
+	ScreenID string           `json:"screenId"`
+	IsPopup  bool             `json:"isPopupTask"`
 	Position flowTaskPosition `json:"position"`
 }
 
@@ -71,9 +73,9 @@ type taskFlowDiagram struct {
 }
 
 type flowDiagramRecord struct {
-	ProjectID string         `json:"projectId"`
-	Diagram  taskFlowDiagram `json:"diagram"`
-	UpdatedAt string        `json:"updatedAt"`
+	ProjectID string          `json:"projectId"`
+	Diagram   taskFlowDiagram `json:"diagram"`
+	UpdatedAt string          `json:"updatedAt"`
 }
 
 type saveScreenStateRequest struct {
@@ -92,12 +94,12 @@ type projectRecord struct {
 }
 
 type projectSummary struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Theme           string `json:"theme"`
-	ActiveScreenID  string `json:"activeScreenId"`
-	CreatedAt       string `json:"createdAt"`
-	UpdatedAt       string `json:"updatedAt"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Theme          string `json:"theme"`
+	ActiveScreenID string `json:"activeScreenId"`
+	CreatedAt      string `json:"createdAt"`
+	UpdatedAt      string `json:"updatedAt"`
 }
 
 type screenRecord struct {
@@ -120,21 +122,21 @@ type screenStateRecord struct {
 }
 
 type screenSessionState struct {
-	ID              int64              `json:"id"`
-	Revision        int                `json:"revision"`
-	Payload         sessionPayload     `json:"screenPayload"`
+	ID              int64                `json:"id"`
+	Revision        int                  `json:"revision"`
+	Payload         sessionPayload       `json:"screenPayload"`
 	Conversation    []sessionChatMessage `json:"conversation"`
-	Recommendations []string           `json:"recommendations"`
-	CreatedAt       string             `json:"createdAt"`
+	Recommendations []string             `json:"recommendations"`
+	CreatedAt       string               `json:"createdAt"`
 }
 
 type sessionScreenSummary struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Position   int    `json:"position"`
-	UpdatedAt  string `json:"updatedAt"`
-	IsActive   bool   `json:"isActive"`
-	LastRevision int  `json:"lastRevision"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Position     int    `json:"position"`
+	UpdatedAt    string `json:"updatedAt"`
+	IsActive     bool   `json:"isActive"`
+	LastRevision int    `json:"lastRevision"`
 }
 
 type screenStateSummary struct {
@@ -148,12 +150,12 @@ type screenStateListResponse struct {
 }
 
 type sessionSnapshot struct {
-	ProjectID      string             `json:"projectId"`
-	ProjectName    string             `json:"projectName"`
-	Theme          string             `json:"theme"`
-	ActiveScreenID string             `json:"activeScreenId"`
+	ProjectID      string                 `json:"projectId"`
+	ProjectName    string                 `json:"projectName"`
+	Theme          string                 `json:"theme"`
+	ActiveScreenID string                 `json:"activeScreenId"`
 	Screens        []sessionScreenSummary `json:"screens"`
-	ActiveState    *screenSessionState `json:"activeState"`
+	ActiveState    *screenSessionState    `json:"activeState"`
 }
 
 type sessionProjectStore struct {
@@ -173,6 +175,8 @@ func newSessionProjectStore(path string) (*sessionProjectStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -205,11 +209,53 @@ func (s *sessionProjectStore) bootstrap(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = ON;`); err != nil {
 		return err
 	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA journal_mode = WAL;`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`PRAGMA busy_timeout = %d;`, sqliteBusyTimeout)); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA synchronous = NORMAL;`); err != nil {
+		return err
+	}
 
 	if err := sessionmigrations.RunMigrations(ctx, s.db); err != nil {
 		return err
 	}
 	return nil
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "database is busy")
+}
+
+func (s *sessionProjectStore) withWriteRetry(ctx context.Context, fn func() error) error {
+	backoff := 40 * time.Millisecond
+	var lastErr error
+	for attempt := 0; attempt < sqliteWriteRetryAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isSQLiteBusy(err) || attempt == sqliteWriteRetryAttempts-1 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+			backoff *= 2
+		}
+	}
+	return lastErr
 }
 
 func (s *sessionProjectStore) normalizeScreenNames(ctx context.Context) error {
@@ -218,19 +264,31 @@ func (s *sessionProjectStore) normalizeScreenNames(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer projects.Close()
+
+	projectIDs := make([]string, 0, 8)
 
 	for projects.Next() {
 		var projectID string
 		if err := projects.Scan(&projectID); err != nil {
+			_ = projects.Close()
 			return err
 		}
+		projectIDs = append(projectIDs, projectID)
+	}
+	if err := projects.Err(); err != nil {
+		_ = projects.Close()
+		return err
+	}
+	if err := projects.Close(); err != nil {
+		return err
+	}
 
+	for _, projectID := range projectIDs {
 		if err := s.normalizeProjectScreenNames(ctx, projectID); err != nil {
 			return err
 		}
 	}
-	return projects.Err()
+	return nil
 }
 
 func (s *sessionProjectStore) normalizeProjectScreenNames(ctx context.Context, projectID string) error {
@@ -244,16 +302,34 @@ func (s *sessionProjectStore) normalizeProjectScreenNames(ctx context.Context, p
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 
-	usedNames := make(map[string]int, 16)
+	type screenNameRow struct {
+		id   string
+		name string
+	}
+	screenRows := make([]screenNameRow, 0, 16)
+
 	for rows.Next() {
 		var screenID string
 		var screenName string
 		if err := rows.Scan(&screenID, &screenName); err != nil {
+			_ = rows.Close()
 			return err
 		}
+		screenRows = append(screenRows, screenNameRow{id: screenID, name: screenName})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
 
+	usedNames := make(map[string]int, 16)
+	for _, row := range screenRows {
+		screenID := row.id
+		screenName := row.name
 		seen := usedNames[screenName]
 		if seen == 0 {
 			usedNames[screenName] = 1
@@ -269,7 +345,7 @@ func (s *sessionProjectStore) normalizeProjectScreenNames(ctx context.Context, p
 		}
 	}
 
-	return rows.Err()
+	return nil
 }
 
 func (s *sessionProjectStore) getDefaultProject(ctx context.Context) (projectRecord, error) {
@@ -342,24 +418,27 @@ func (s *sessionProjectStore) createProject(ctx context.Context, name string) (p
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	projectID := fmt.Sprintf("project-%s", newSessionID())
-	_, err := s.db.ExecContext(
-		ctx,
-		`INSERT INTO projects (id, name, theme, active_screen_id, created_at, updated_at)
-		 VALUES (?, ?, ?, NULL, ?, ?);`,
-		projectID,
-		name,
-		defaultTheme,
-		now,
-		now,
-	)
+	err := s.withWriteRetry(ctx, func() error {
+		_, execErr := s.db.ExecContext(
+			ctx,
+			`INSERT INTO projects (id, name, theme, active_screen_id, created_at, updated_at)
+			 VALUES (?, ?, ?, NULL, ?, ?);`,
+			projectID,
+			name,
+			defaultTheme,
+			now,
+			now,
+		)
+		return execErr
+	})
 	if err != nil {
 		return projectSummary{}, err
 	}
 
 	return projectSummary{
-		ID:     projectID,
-		Name:   name,
-		Theme:  defaultTheme,
+		ID:        projectID,
+		Name:      name,
+		Theme:     defaultTheme,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
@@ -376,13 +455,18 @@ func (s *sessionProjectStore) renameProject(ctx context.Context, projectID, name
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	result, err := s.db.ExecContext(
-		ctx,
-		`UPDATE projects SET name = ?, updated_at = ? WHERE id = ?;`,
-		name,
-		now,
-		projectID,
-	)
+	var result sql.Result
+	err := s.withWriteRetry(ctx, func() error {
+		var execErr error
+		result, execErr = s.db.ExecContext(
+			ctx,
+			`UPDATE projects SET name = ?, updated_at = ? WHERE id = ?;`,
+			name,
+			now,
+			projectID,
+		)
+		return execErr
+	})
 	if err != nil {
 		return err
 	}
@@ -410,7 +494,12 @@ func (s *sessionProjectStore) deleteProject(ctx context.Context, projectID strin
 		return errProjectDeleteLast
 	}
 
-	result, err := s.db.ExecContext(ctx, `DELETE FROM projects WHERE id = ?;`, projectID)
+	var result sql.Result
+	err := s.withWriteRetry(ctx, func() error {
+		var execErr error
+		result, execErr = s.db.ExecContext(ctx, `DELETE FROM projects WHERE id = ?;`, projectID)
+		return execErr
+	})
 	if err != nil {
 		return err
 	}
@@ -424,10 +513,18 @@ func (s *sessionProjectStore) deleteProject(ctx context.Context, projectID strin
 func (s *sessionProjectStore) listScreens(ctx context.Context, projectID string) ([]sessionScreenSummary, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
-		`SELECT id, name, position, updated_at, is_active
-		FROM screens
-		WHERE project_id = ? AND is_deleted = 0
-		ORDER BY is_active DESC, position ASC, updated_at DESC;`,
+		`SELECT
+			s.id,
+			s.name,
+			s.position,
+			s.updated_at,
+			s.is_active,
+			COALESCE(MAX(ss.revision), 0) AS last_revision
+		FROM screens s
+		LEFT JOIN screen_states ss ON ss.screen_id = s.id
+		WHERE s.project_id = ? AND s.is_deleted = 0
+		GROUP BY s.id, s.name, s.position, s.updated_at, s.is_active
+		ORDER BY s.is_active DESC, s.position ASC, s.updated_at DESC;`,
 		projectID,
 	)
 	if err != nil {
@@ -439,18 +536,18 @@ func (s *sessionProjectStore) listScreens(ctx context.Context, projectID string)
 	for rows.Next() {
 		var row screenRecord
 		var isActive int
-		if err := rows.Scan(&row.ID, &row.Name, &row.Position, &row.UpdatedAt, &isActive); err != nil {
+		var lastRevision int
+		if err := rows.Scan(&row.ID, &row.Name, &row.Position, &row.UpdatedAt, &isActive, &lastRevision); err != nil {
 			return nil, err
 		}
 		screen := sessionScreenSummary{
-			ID:        row.ID,
-			Name:      row.Name,
-			Position:  row.Position,
-			UpdatedAt: row.UpdatedAt,
-			IsActive:  isActive == 1,
+			ID:           row.ID,
+			Name:         row.Name,
+			Position:     row.Position,
+			UpdatedAt:    row.UpdatedAt,
+			IsActive:     isActive == 1,
+			LastRevision: lastRevision,
 		}
-		lastRevision, _ := s.getLatestRevision(ctx, row.ID)
-		screen.LastRevision = lastRevision
 		screens = append(screens, screen)
 	}
 	if err := rows.Err(); err != nil {
@@ -499,71 +596,81 @@ func (s *sessionProjectStore) createScreen(ctx context.Context, projectID, name 
 	now := time.Now().UTC().Format(time.RFC3339)
 	screenID := newSessionID()
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return sessionScreenSummary{}, err
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
+	err := s.withWriteRetry(ctx, func() error {
+		tx, txErr := s.db.BeginTx(ctx, nil)
+		if txErr != nil {
+			return txErr
 		}
-	}()
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
 
-	_, err = tx.ExecContext(
-		ctx,
-		`UPDATE screens SET is_active = 0 WHERE project_id = ?;`,
-		projectID,
-	)
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`UPDATE screens SET is_active = 0 WHERE project_id = ?;`,
+			projectID,
+		); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`INSERT INTO screens (id, project_id, name, position, created_at, updated_at, is_active)
+			 VALUES (?, ?, ?, ?, ?, ?, 1);`,
+			screenID,
+			projectID,
+			name,
+			existing+1,
+			now,
+			now,
+		); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`UPDATE projects SET active_screen_id = ?, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
+			screenID,
+			now,
+			now,
+			projectID,
+		); txErr != nil {
+			return txErr
+		}
+		if txErr = tx.Commit(); txErr != nil {
+			return txErr
+		}
+		committed = true
+		return nil
+	})
 	if err != nil {
-		return sessionScreenSummary{}, err
-	}
-	_, err = tx.ExecContext(
-		ctx,
-		`INSERT INTO screens (id, project_id, name, position, created_at, updated_at, is_active)
-		 VALUES (?, ?, ?, ?, ?, ?, 1);`,
-		screenID,
-		projectID,
-		name,
-		existing+1,
-		now,
-		now,
-	)
-	if err != nil {
-		return sessionScreenSummary{}, err
-	}
-	_, err = tx.ExecContext(
-		ctx,
-		`UPDATE projects SET active_screen_id = ?, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
-		screenID,
-		now,
-		now,
-		projectID,
-	)
-	if err != nil {
-		return sessionScreenSummary{}, err
-	}
-	if err = tx.Commit(); err != nil {
 		return sessionScreenSummary{}, err
 	}
 
 	return sessionScreenSummary{
-		ID:       screenID,
-		Name:     name,
-		Position: existing + 1,
-		IsActive: true,
+		ID:        screenID,
+		Name:      name,
+		Position:  existing + 1,
+		IsActive:  true,
 		UpdatedAt: now,
 	}, nil
 }
 
 func (s *sessionProjectStore) activateScreen(ctx context.Context, projectID, screenID string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	result, err := s.db.ExecContext(
-		ctx,
-		`UPDATE screens SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END
-		 WHERE project_id = ? AND is_deleted = 0;`,
-		screenID,
-		projectID,
-	)
+	var result sql.Result
+	err := s.withWriteRetry(ctx, func() error {
+		var execErr error
+		result, execErr = s.db.ExecContext(
+			ctx,
+			`UPDATE screens SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END
+			 WHERE project_id = ? AND is_deleted = 0;`,
+			screenID,
+			projectID,
+		)
+		return execErr
+	})
 	if err != nil {
 		return err
 	}
@@ -571,103 +678,114 @@ func (s *sessionProjectStore) activateScreen(ctx context.Context, projectID, scr
 	if rowsAffected == 0 {
 		return os.ErrNotExist
 	}
-	_, err = s.db.ExecContext(
-		ctx,
-		`UPDATE projects SET active_screen_id = ?, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
-		screenID,
-		now,
-		now,
-		projectID,
-	)
+	err = s.withWriteRetry(ctx, func() error {
+		_, execErr := s.db.ExecContext(
+			ctx,
+			`UPDATE projects SET active_screen_id = ?, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
+			screenID,
+			now,
+			now,
+			projectID,
+		)
+		return execErr
+	})
 	return err
 }
 
 func (s *sessionProjectStore) deleteScreen(ctx context.Context, projectID, screenID string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
+	return s.withWriteRetry(ctx, func() error {
+		tx, txErr := s.db.BeginTx(ctx, nil)
+		if txErr != nil {
+			return txErr
 		}
-	}()
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
 
-	var belongs int
-	if err = tx.QueryRowContext(
-		ctx,
-		`SELECT COUNT(1) FROM screens WHERE id = ? AND project_id = ? AND is_deleted = 0;`,
-		screenID,
-		projectID,
-	).Scan(&belongs); err != nil {
-		return err
-	}
-	if belongs == 0 {
-		return os.ErrNotExist
-	}
-
-	if _, err = tx.ExecContext(
-		ctx,
-		`UPDATE screens
-		 SET is_deleted = 1, is_active = 0
-		 WHERE id = ? AND project_id = ?;`,
-		screenID,
-		projectID,
-	); err != nil {
-		return err
-	}
-
-	var replacementScreenID sql.NullString
-	if err = tx.QueryRowContext(
-		ctx,
-		`SELECT id FROM screens
-		 WHERE project_id = ? AND is_deleted = 0
-		 ORDER BY is_active DESC, updated_at DESC, position ASC
-		 LIMIT 1;`,
-		projectID,
-	).Scan(&replacementScreenID); err != nil && err != sql.ErrNoRows {
-		return err
-	}
-
-	if replacementScreenID.Valid {
-		nextActiveScreen := replacementScreenID.String
-		_, err = tx.ExecContext(
+		var belongs int
+		if txErr = tx.QueryRowContext(
 			ctx,
-			`UPDATE screens SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END
-			 WHERE project_id = ? AND is_deleted = 0;`,
-			nextActiveScreen,
+			`SELECT COUNT(1) FROM screens WHERE id = ? AND project_id = ? AND is_deleted = 0;`,
+			screenID,
 			projectID,
-		)
-		if err != nil {
-			return err
+		).Scan(&belongs); txErr != nil {
+			return txErr
 		}
-		_, err = tx.ExecContext(
+		if belongs == 0 {
+			return os.ErrNotExist
+		}
+
+		if _, txErr = tx.ExecContext(
 			ctx,
-			`UPDATE projects SET active_screen_id = ?, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
-			nextActiveScreen,
+			`UPDATE screens
+			 SET is_deleted = 1, is_active = 0
+			 WHERE id = ? AND project_id = ?;`,
+			screenID,
+			projectID,
+		); txErr != nil {
+			return txErr
+		}
+
+		var replacementScreenID sql.NullString
+		if txErr = tx.QueryRowContext(
+			ctx,
+			`SELECT id FROM screens
+			 WHERE project_id = ? AND is_deleted = 0
+			 ORDER BY is_active DESC, updated_at DESC, position ASC
+			 LIMIT 1;`,
+			projectID,
+		).Scan(&replacementScreenID); txErr != nil && txErr != sql.ErrNoRows {
+			return txErr
+		}
+
+		if replacementScreenID.Valid {
+			nextActiveScreen := replacementScreenID.String
+			if _, txErr = tx.ExecContext(
+				ctx,
+				`UPDATE screens SET is_active = CASE WHEN id = ? THEN 1 ELSE 0 END
+				 WHERE project_id = ? AND is_deleted = 0;`,
+				nextActiveScreen,
+				projectID,
+			); txErr != nil {
+				return txErr
+			}
+			if _, txErr = tx.ExecContext(
+				ctx,
+				`UPDATE projects SET active_screen_id = ?, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
+				nextActiveScreen,
+				now,
+				now,
+				projectID,
+			); txErr != nil {
+				return txErr
+			}
+			if txErr = tx.Commit(); txErr != nil {
+				return txErr
+			}
+			committed = true
+			return nil
+		}
+
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`UPDATE projects SET active_screen_id = NULL, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
 			now,
 			now,
 			projectID,
-		)
-		if err != nil {
-			return err
+		); txErr != nil {
+			return txErr
 		}
-		return tx.Commit()
-	}
 
-	_, err = tx.ExecContext(
-		ctx,
-		`UPDATE projects SET active_screen_id = NULL, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
-		now,
-		now,
-		projectID,
-	)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
+		if txErr = tx.Commit(); txErr != nil {
+			return txErr
+		}
+		committed = true
+		return nil
+	})
 }
 
 func (s *sessionProjectStore) listScreenStates(ctx context.Context, projectID, screenID string, limit int) ([]screenStateSummary, error) {
@@ -726,7 +844,12 @@ func (s *sessionProjectStore) setTheme(ctx context.Context, projectID, theme str
 	if theme == "" {
 		theme = defaultTheme
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE projects SET theme = ?, updated_at = ? WHERE id = ?;`, theme, now, projectID)
+	var result sql.Result
+	err := s.withWriteRetry(ctx, func() error {
+		var execErr error
+		result, execErr = s.db.ExecContext(ctx, `UPDATE projects SET theme = ?, updated_at = ? WHERE id = ?;`, theme, now, projectID)
+		return execErr
+	})
 	if err != nil {
 		return err
 	}
@@ -751,73 +874,84 @@ func (s *sessionProjectStore) saveState(ctx context.Context, projectID, screenID
 		return nil, fmt.Errorf("invalid recommendations: %w", err)
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
+	var (
+		lastInsertID int64
+		revision     int
+		now          string
+	)
+	err = s.withWriteRetry(ctx, func() error {
+		tx, txErr := s.db.BeginTx(ctx, nil)
+		if txErr != nil {
+			return txErr
 		}
-	}()
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
 
-	var belongs int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM screens WHERE id = ? AND project_id = ? AND is_deleted = 0;`, screenID, projectID).Scan(&belongs); err != nil {
-		return nil, err
-	}
-	if belongs == 0 {
-		return nil, os.ErrNotExist
-	}
+		var belongs int
+		if txErr = tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM screens WHERE id = ? AND project_id = ? AND is_deleted = 0;`, screenID, projectID).Scan(&belongs); txErr != nil {
+			return txErr
+		}
+		if belongs == 0 {
+			return os.ErrNotExist
+		}
 
-	var revision int
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision), 0) + 1 FROM screen_states WHERE screen_id = ?;`, screenID).Scan(&revision); err != nil {
-		return nil, err
-	}
+		if txErr = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision), 0) + 1 FROM screen_states WHERE screen_id = ?;`, screenID).Scan(&revision); txErr != nil {
+			return txErr
+		}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	result, err := tx.ExecContext(
-		ctx,
-		`INSERT INTO screen_states (screen_id, revision, screen_payload_json, conversation_json, recommendations_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?);`,
-		screenID, revision, string(payloadBytes), string(conversationBytes), string(recommendationsBytes), now,
-	)
+		now = time.Now().UTC().Format(time.RFC3339)
+		var result sql.Result
+		result, txErr = tx.ExecContext(
+			ctx,
+			`INSERT INTO screen_states (screen_id, revision, screen_payload_json, conversation_json, recommendations_json, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?);`,
+			screenID, revision, string(payloadBytes), string(conversationBytes), string(recommendationsBytes), now,
+		)
+		if txErr != nil {
+			return txErr
+		}
+		lastInsertID, _ = result.LastInsertId()
+
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`UPDATE screens SET updated_at = ?, is_active = 1 WHERE id = ?;`,
+			now,
+			screenID,
+		); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`UPDATE projects SET active_screen_id = ?, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
+			screenID,
+			now,
+			now,
+			projectID,
+		); txErr != nil {
+			return txErr
+		}
+
+		if txErr = tx.Commit(); txErr != nil {
+			return txErr
+		}
+		committed = true
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	lastInsertID, _ := result.LastInsertId()
-
-	_, err = tx.ExecContext(
-		ctx,
-		`UPDATE screens SET updated_at = ?, is_active = 1 WHERE id = ?;`,
-		now,
-		screenID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	_, err = tx.ExecContext(
-		ctx,
-		`UPDATE projects SET active_screen_id = ?, updated_at = ?, last_opened_at = ? WHERE id = ?;`,
-		screenID,
-		now,
-		now,
-		projectID,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
 
 	return &screenSessionState{
-		ID:             lastInsertID,
-		Revision:       revision,
-		Payload:        payload.Payload,
-		Conversation:   payload.Conversation,
+		ID:              lastInsertID,
+		Revision:        revision,
+		Payload:         payload.Payload,
+		Conversation:    payload.Conversation,
 		Recommendations: payload.Recommendations,
-		CreatedAt:      now,
+		CreatedAt:       now,
 	}, nil
 }
 
@@ -901,18 +1035,21 @@ func (s *sessionProjectStore) saveFlowDiagram(ctx context.Context, projectID str
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.db.ExecContext(
-		ctx,
-		`INSERT INTO flow_diagrams (project_id, diagram_payload_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(project_id) DO UPDATE SET
-		  diagram_payload_json = excluded.diagram_payload_json,
-		  updated_at = excluded.updated_at;`,
-		projectID,
-		string(diagramPayload),
-		now,
-		now,
-	); err != nil {
+	if err := s.withWriteRetry(ctx, func() error {
+		_, execErr := s.db.ExecContext(
+			ctx,
+			`INSERT INTO flow_diagrams (project_id, diagram_payload_json, created_at, updated_at)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(project_id) DO UPDATE SET
+			  diagram_payload_json = excluded.diagram_payload_json,
+			  updated_at = excluded.updated_at;`,
+			projectID,
+			string(diagramPayload),
+			now,
+			now,
+		)
+		return execErr
+	}); err != nil {
 		return flowDiagramRecord{}, err
 	}
 
@@ -977,16 +1114,16 @@ func newSessionID() string {
 }
 
 type projectSettingsRecord struct {
-	ProjectID             string `json:"projectId"`
-	DesignStyle           string `json:"designStyle"`
-	ColorPalette          string `json:"colorPalette"`
-	BrandGuidelines       string `json:"brandGuidelines"`
-	ComponentExamples     string `json:"componentExamples"`
-	TechnicalConstraints  string `json:"technicalConstraints"`
-	LayoutPreferences     string `json:"layoutPreferences"`
-	ImageGenerationNotes  string `json:"imageGenerationNotes"`
-	GenerationContext     string `json:"generationContext"`
-	UpdatedAt             string `json:"updatedAt"`
+	ProjectID            string `json:"projectId"`
+	DesignStyle          string `json:"designStyle"`
+	ColorPalette         string `json:"colorPalette"`
+	BrandGuidelines      string `json:"brandGuidelines"`
+	ComponentExamples    string `json:"componentExamples"`
+	TechnicalConstraints string `json:"technicalConstraints"`
+	LayoutPreferences    string `json:"layoutPreferences"`
+	ImageGenerationNotes string `json:"imageGenerationNotes"`
+	GenerationContext    string `json:"generationContext"`
+	UpdatedAt            string `json:"updatedAt"`
 }
 
 func (s *sessionProjectStore) getProjectSettings(ctx context.Context, projectID string) (projectSettingsRecord, error) {
@@ -1034,34 +1171,37 @@ func (s *sessionProjectStore) saveProjectSettings(ctx context.Context, projectID
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.ExecContext(
-		ctx,
-		`INSERT INTO project_settings (
-			project_id, design_style, color_palette, brand_guidelines,
-			component_examples, technical_constraints, layout_preferences,
-			image_generation_notes, generation_context, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(project_id) DO UPDATE SET
-			design_style = excluded.design_style,
-			color_palette = excluded.color_palette,
-			brand_guidelines = excluded.brand_guidelines,
-			component_examples = excluded.component_examples,
-			technical_constraints = excluded.technical_constraints,
-			layout_preferences = excluded.layout_preferences,
-			image_generation_notes = excluded.image_generation_notes,
-			generation_context = excluded.generation_context,
-			updated_at = excluded.updated_at;`,
-		projectID,
-		strings.TrimSpace(settings.DesignStyle),
-		strings.TrimSpace(settings.ColorPalette),
-		strings.TrimSpace(settings.BrandGuidelines),
-		strings.TrimSpace(settings.ComponentExamples),
-		strings.TrimSpace(settings.TechnicalConstraints),
-		strings.TrimSpace(settings.LayoutPreferences),
-		strings.TrimSpace(settings.ImageGenerationNotes),
-		strings.TrimSpace(settings.GenerationContext),
-		now,
-	)
+	err := s.withWriteRetry(ctx, func() error {
+		_, execErr := s.db.ExecContext(
+			ctx,
+			`INSERT INTO project_settings (
+				project_id, design_style, color_palette, brand_guidelines,
+				component_examples, technical_constraints, layout_preferences,
+				image_generation_notes, generation_context, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(project_id) DO UPDATE SET
+				design_style = excluded.design_style,
+				color_palette = excluded.color_palette,
+				brand_guidelines = excluded.brand_guidelines,
+				component_examples = excluded.component_examples,
+				technical_constraints = excluded.technical_constraints,
+				layout_preferences = excluded.layout_preferences,
+				image_generation_notes = excluded.image_generation_notes,
+				generation_context = excluded.generation_context,
+				updated_at = excluded.updated_at;`,
+			projectID,
+			strings.TrimSpace(settings.DesignStyle),
+			strings.TrimSpace(settings.ColorPalette),
+			strings.TrimSpace(settings.BrandGuidelines),
+			strings.TrimSpace(settings.ComponentExamples),
+			strings.TrimSpace(settings.TechnicalConstraints),
+			strings.TrimSpace(settings.LayoutPreferences),
+			strings.TrimSpace(settings.ImageGenerationNotes),
+			strings.TrimSpace(settings.GenerationContext),
+			now,
+		)
+		return execErr
+	})
 	if err != nil {
 		return projectSettingsRecord{}, err
 	}
