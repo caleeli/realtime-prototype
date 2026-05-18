@@ -3,3 +3,6 @@
 apps/api/cache/inspiration/images/
 apps/api/data
 .semantic-code-mcp/
+.cursor
+.claude
+.codegraph
