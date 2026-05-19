@@ -2710,6 +2710,37 @@ async function submitCurrentScreen(routeOrScreenId?: string): Promise<void> {
   await openScreen(nextScreenId, { force: true });
 }
 
+async function navigateFromGeneratedScreen(taskRouteOrId?: string): Promise<void> {
+  if (primaryNav.value !== 'execution') {
+    message.value = 'navigate(...) solo está disponible durante la ejecución del prototipo.';
+    return;
+  }
+
+  const target = (taskRouteOrId ?? '').trim();
+  if (!target) {
+    message.value = 'navigate(...) requiere un identificador o ruta de tarea/pantalla.';
+    return;
+  }
+
+  const targetTaskId = resolveTaskIdFromRouteReference(target);
+  if (targetTaskId) {
+    const targetTask = flowTasks.value.find((task) => task.id === targetTaskId);
+    if (!targetTask?.screenId) {
+      message.value = `La tarea "${targetTaskId}" no tiene pantalla asociada.`;
+      return;
+    }
+    await openScreen(targetTask.screenId, { force: true });
+    return;
+  }
+
+  const targetScreenId = resolveScreenIdFromRouteReference(target);
+  if (!targetScreenId) {
+    message.value = `No se encontró destino para navigate("${target}").`;
+    return;
+  }
+  await openScreen(targetScreenId, { force: true });
+}
+
 async function openPopupScreen(routeOrScreenId?: string): Promise<void> {
   const targetScreenId = resolveScreenIdFromRouteReference(routeOrScreenId);
   if (!targetScreenId) {
@@ -2769,6 +2800,7 @@ async function openPopupScreen(routeOrScreenId?: string): Promise<void> {
       styleId: `popup-screen-${targetScreenId}`,
       runtimeContext: {
         popup: openPopupScreen,
+        navigate: navigateFromGeneratedScreen,
       },
     });
 
@@ -2851,6 +2883,7 @@ async function onHashChange() {
 function createRuntimeContext() {
   return {
     popup: openPopupScreen,
+    navigate: navigateFromGeneratedScreen,
   };
 }
 
@@ -2860,6 +2893,7 @@ function createFlowPreviewRuntimeContext() {
   };
   return {
     popup: noop,
+    navigate: noop,
   };
 }
 
@@ -3274,6 +3308,34 @@ async function onDuplicateScreenClick() {
     message.value = 'Pantalla duplicada.';
   } catch (_error) {
     message.value = 'No se pudo duplicar la pantalla.';
+  } finally {
+    isSessionLoading.value = false;
+  }
+}
+
+async function onRenameScreenClick() {
+  const targetScreenId = activeScreenId.value.trim();
+  if (!targetScreenId || isSessionLoading.value || isSaving.value || isGenerating.value) {
+    return;
+  }
+  const current = screens.value.find((screen) => screen.id === targetScreenId);
+  if (!current) {
+    return;
+  }
+  const nextName = window.prompt('Nuevo nombre de la pantalla:', current.name);
+  if (!nextName || !nextName.trim()) {
+    return;
+  }
+
+  isSessionLoading.value = true;
+  try {
+    await sessionService.renameScreen(targetScreenId, nextName.trim(), activeProjectId.value);
+    const session = await refreshScreensFromSession();
+    screens.value = session.screens || screens.value;
+    syncFlowTasksToScreens(screens.value);
+    message.value = 'Pantalla renombrada.';
+  } catch (_error) {
+    message.value = 'No se pudo renombrar la pantalla.';
   } finally {
     isSessionLoading.value = false;
   }
@@ -4225,6 +4287,15 @@ function onPromptKeydown(event: KeyboardEvent) {
             >
               <i class="bi bi-files" aria-hidden="true"></i>
               Duplicar
+            </button>
+            <button
+              type="button"
+              class="screen-action-btn"
+              :disabled="isSessionLoading || isSaving || !activeScreenId"
+              @click="onRenameScreenClick"
+            >
+              <i class="bi bi-pencil-square" aria-hidden="true"></i>
+              Renombrar
             </button>
             <button
               type="button"

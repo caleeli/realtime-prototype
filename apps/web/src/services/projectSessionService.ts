@@ -270,6 +270,15 @@ export class ProjectSessionService {
     await parseResponse<Record<string, string>>(response);
   }
 
+  async renameScreen(screenId: string, name: string, projectId = ''): Promise<SessionScreenSummary> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}`, projectId), {
+      method: 'PATCH',
+      headers: buildHeaders(),
+      body: JSON.stringify({ name }),
+    });
+    return parseResponse<SessionScreenSummary>(response);
+  }
+
   async deleteScreen(screenId: string, projectId = ''): Promise<void> {
     const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_SCREENS_ENDPOINT}/${encodeURIComponent(screenId)}`, projectId), {
       method: 'DELETE',

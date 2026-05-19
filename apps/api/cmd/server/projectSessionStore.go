@@ -34,6 +34,7 @@ var (
 	errProjectNameRequired  = errors.New("project name is required")
 	errProjectDeleteDefault = errors.New("default project cannot be deleted")
 	errProjectDeleteLast    = errors.New("cannot delete the last project")
+	errScreenNameRequired   = errors.New("screen name is required")
 )
 
 type sessionChatMessage struct {
@@ -645,6 +646,77 @@ func (s *sessionProjectStore) createScreen(ctx context.Context, projectID, name 
 		IsActive:  true,
 		UpdatedAt: now,
 	}, nil
+}
+
+func (s *sessionProjectStore) renameScreen(ctx context.Context, projectID, screenID, name string) error {
+	projectID = strings.TrimSpace(projectID)
+	screenID = strings.TrimSpace(screenID)
+	name = strings.TrimSpace(name)
+	if projectID == "" || screenID == "" {
+		return os.ErrNotExist
+	}
+	if name == "" {
+		return errScreenNameRequired
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	err := s.withWriteRetry(ctx, func() error {
+		tx, txErr := s.db.BeginTx(ctx, nil)
+		if txErr != nil {
+			return txErr
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback()
+			}
+		}()
+
+		var belongs int
+		if txErr = tx.QueryRowContext(
+			ctx,
+			`SELECT COUNT(1) FROM screens WHERE id = ? AND project_id = ? AND is_deleted = 0;`,
+			screenID,
+			projectID,
+		).Scan(&belongs); txErr != nil {
+			return txErr
+		}
+		if belongs == 0 {
+			return os.ErrNotExist
+		}
+
+		resolvedName := nextAvailableScreenNameFromQuery(ctx, tx, projectID, name, 1)
+		if resolvedName == "" {
+			return fmt.Errorf("could not resolve screen name")
+		}
+
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`UPDATE screens SET name = ?, updated_at = ? WHERE id = ? AND project_id = ? AND is_deleted = 0;`,
+			resolvedName,
+			now,
+			screenID,
+			projectID,
+		); txErr != nil {
+			return txErr
+		}
+		if _, txErr = tx.ExecContext(
+			ctx,
+			`UPDATE projects SET updated_at = ?, last_opened_at = ? WHERE id = ?;`,
+			now,
+			now,
+			projectID,
+		); txErr != nil {
+			return txErr
+		}
+
+		if txErr = tx.Commit(); txErr != nil {
+			return txErr
+		}
+		committed = true
+		return nil
+	})
+	return err
 }
 
 func (s *sessionProjectStore) nextAvailableScreenName(ctx context.Context, projectID, requestedName string, fallbackIndex int) string {

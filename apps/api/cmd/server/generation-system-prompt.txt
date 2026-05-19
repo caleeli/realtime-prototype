@@ -9,6 +9,7 @@ Do not emit any keys other than pug, css, and data.
 Navigation behavior is handled by native form submit interception in the runtime.
 Use `action` on forms when you need a specific destination (`action="taskId"` or `action="#/task/..."`).
 Do not use a generated `submit(...)` helper.
+If want to navigate to a task or screen, use `navigate(taskRouteOrId)`.
 Open popup flows only with `popup(taskRouteOrId)`.
 pug example:
 div.login-screen

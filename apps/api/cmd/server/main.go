@@ -423,6 +423,41 @@ func main() {
 				return
 			}
 
+			if r.Method == http.MethodPatch && len(parts) == 1 {
+				var payload struct {
+					Name string `json:"name"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+					return
+				}
+				if err := sessionStore.renameScreen(r.Context(), project.ID, screenID, payload.Name); err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						writeJSON(w, http.StatusNotFound, map[string]string{"error": "screen not found"})
+						return
+					}
+					if errors.Is(err, errScreenNameRequired) {
+						writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+						return
+					}
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+					return
+				}
+				session, err := sessionStore.getSnapshot(r.Context(), project.ID)
+				if err != nil {
+					getProjectMethodError(w, err)
+					return
+				}
+				for _, screen := range session.Screens {
+					if screen.ID == screenID {
+						writeJSON(w, http.StatusOK, screen)
+						return
+					}
+				}
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "screen not found"})
+				return
+			}
+
 			if r.Method == http.MethodDelete && len(parts) == 1 {
 				if err := sessionStore.deleteScreen(r.Context(), project.ID, screenID); err != nil {
 					if errors.Is(err, os.ErrNotExist) {
