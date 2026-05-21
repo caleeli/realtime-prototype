@@ -168,6 +168,23 @@ export interface ProjectSessionServiceOptions {
   baseUrl?: string;
 }
 
+export type ProjectExportMapper = {
+  version: string;
+  outputPath: string;
+  operations: Array<{
+    op: 'set' | 'copy' | 'mapArray';
+    to: string;
+    from?: string;
+    value?: unknown;
+    itemTemplate?: Record<string, unknown>;
+  }>;
+};
+
+export type ProjectExportDownload = {
+  blob: Blob;
+  fileName: string;
+};
+
 function parseResponse<T>(response: Response): Promise<T> {
   return response.text().then((text) => {
     if (!response.ok) {
@@ -481,5 +498,22 @@ export class ProjectSessionService {
       return withProject;
     }
     return `${withProject}${withProject.includes('?') ? '&' : '?'}versionId=${encodeURIComponent(versionId.trim())}`;
+  }
+
+  async exportProject(projectId = '', mapper?: ProjectExportMapper): Promise<ProjectExportDownload> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_ENDPOINT}/export`, projectId), {
+      method: 'POST',
+      headers: buildHeaders(),
+      body: JSON.stringify(mapper ? { mapper } : {}),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Request failed with ${response.status}`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const fileNameMatch = disposition.match(/filename="([^"]+)"/i);
+    const fileName = fileNameMatch?.[1]?.trim() || 'project-export.json';
+    return { blob, fileName };
   }
 }

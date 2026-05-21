@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "outputPath": "projectExport",
+  "operations": [
+    { "op": "set", "to": "meta.schema", "value": "realtime-prototype.project-export.v1" },
+    { "op": "copy", "from": "exportedAt", "to": "meta.exportedAt" },
+    { "op": "copy", "from": "project.ID", "to": "project.id" },
+    { "op": "copy", "from": "project.Name", "to": "project.name" },
+    { "op": "copy", "from": "project.Theme", "to": "project.theme" },
+    { "op": "copy", "from": "project.ActiveScreen", "to": "project.activeScreenId" },
+    { "op": "copy", "from": "projectSettings", "to": "project.settings" },
+    { "op": "copy", "from": "flowDiagram.diagram", "to": "flow.diagram" },
+    { "op": "copy", "from": "flowDiagram.updatedAt", "to": "flow.updatedAt" },
+    {
+      "op": "mapArray",
+      "from": "screens",
+      "to": "screens",
+      "itemTemplate": {
+        "id": "{{screen.id}}",
+        "name": "{{screen.name}}",
+        "position": "{{screen.position}}",
+        "isActive": "{{screen.isActive}}",
+        "lastRevision": "{{screen.lastRevision}}",
+        "updatedAt": "{{screen.updatedAt}}",
+        "screenPayload": "{{latestState.screenPayload}}",
+        "conversation": "{{latestState.conversation}}",
+        "recommendations": "{{latestState.recommendations}}"
+      }
+    }
+  ]
+}

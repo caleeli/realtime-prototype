@@ -39,6 +39,7 @@ import {
   type ProjectSummary,
   type ProjectSettings,
   type ProjectImageAsset,
+  type ProjectExportMapper,
 } from './services/projectSessionService';
 import ProjectSettingsPanel from './components/ProjectSettingsPanel.vue';
 
@@ -221,6 +222,7 @@ const isHydratingSession = ref(false);
 const projects = ref<ProjectSummary[]>([]);
 const activeProjectId = ref('');
 const isLoadingProjects = ref(false);
+const isExportingProject = ref(false);
 const isScreenDirty = ref(false);
 const projectSettings = ref<ProjectSettings | null>(null);
 const isLoadingProjectSettings = ref(false);
@@ -297,6 +299,38 @@ const popupRuntimeCounter = ref(0);
 const BOOTSWATCH_VERSION = '5.3.8';
 const BOOTSWATCH_LINK_ID = 'bootswatch-theme-runtime';
 const FLOW_DIAGRAM_AUTO_SAVE_MS = 500;
+
+const projectExportBaseMapper: ProjectExportMapper = {
+  version: '1.0',
+  outputPath: 'projectExport',
+  operations: [
+    { op: 'set', to: 'meta.schema', value: 'realtime-prototype.project-export.v1' },
+    { op: 'copy', from: 'exportedAt', to: 'meta.exportedAt' },
+    { op: 'copy', from: 'project.ID', to: 'project.id' },
+    { op: 'copy', from: 'project.Name', to: 'project.name' },
+    { op: 'copy', from: 'project.Theme', to: 'project.theme' },
+    { op: 'copy', from: 'project.ActiveScreen', to: 'project.activeScreenId' },
+    { op: 'copy', from: 'projectSettings', to: 'project.settings' },
+    { op: 'copy', from: 'flowDiagram.diagram', to: 'flow.diagram' },
+    { op: 'copy', from: 'flowDiagram.updatedAt', to: 'flow.updatedAt' },
+    {
+      op: 'mapArray',
+      from: 'screens',
+      to: 'screens',
+      itemTemplate: {
+        id: '{{screen.id}}',
+        name: '{{screen.name}}',
+        position: '{{screen.position}}',
+        isActive: '{{screen.isActive}}',
+        lastRevision: '{{screen.lastRevision}}',
+        updatedAt: '{{screen.updatedAt}}',
+        screenPayload: '{{latestState.screenPayload}}',
+        conversation: '{{latestState.conversation}}',
+        recommendations: '{{latestState.recommendations}}',
+      },
+    },
+  ],
+};
 
 const themeOptions: { value: string; label: string }[] = [
   { value: 'bootstrap', label: 'Bootstrap (default)' },
@@ -1407,8 +1441,33 @@ function onTopbarPlay() {
   void navigateToExecution();
 }
 
-function onExportClick() {
-  message.value = 'La exportación del proyecto estará disponible próximamente.';
+async function onExportClick() {
+  const projectId = activeProjectId.value.trim();
+  if (!projectId) {
+    message.value = 'Selecciona un proyecto para exportar.';
+    return;
+  }
+  if (isExportingProject.value) {
+    return;
+  }
+
+  isExportingProject.value = true;
+  try {
+    const { blob, fileName } = await sessionService.exportProject(projectId, projectExportBaseMapper);
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(objectUrl);
+    message.value = `Proyecto exportado: ${fileName}`;
+  } catch (_error) {
+    message.value = 'No se pudo exportar el proyecto.';
+  } finally {
+    isExportingProject.value = false;
+  }
 }
 
 async function onShareClick() {
@@ -3946,9 +4005,9 @@ function onPromptKeydown(event: KeyboardEvent) {
         <button type="button" class="app-icon-btn" title="Ejecutar prototype" aria-label="Ejecutar prototype" @click="onTopbarPlay">
           <i class="bi bi-play-fill" aria-hidden="true"></i>
         </button>
-        <button type="button" class="app-text-btn" @click="onExportClick">
+        <button type="button" class="app-text-btn" :disabled="isExportingProject || isSessionLoading || !activeProjectId" @click="onExportClick">
           <i class="bi bi-download" aria-hidden="true"></i>
-          Exportar
+          {{ isExportingProject ? 'Exportando...' : 'Exportar' }}
         </button>
         <button type="button" class="app-text-btn" @click="onShareClick">
           <i class="bi bi-share" aria-hidden="true"></i>

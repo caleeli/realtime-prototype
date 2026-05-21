@@ -271,6 +271,88 @@ func main() {
 		}
 
 		switch {
+		case subPath == "export":
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+
+			var payload struct {
+				Mapper *projectExportMapper `json:"mapper"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && !errors.Is(err, io.EOF) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+				return
+			}
+
+			snapshot, err := sessionStore.getSnapshot(r.Context(), project.ID)
+			if err != nil {
+				getProjectMethodError(w, err)
+				return
+			}
+			flowDiagram, _, err := sessionStore.loadFlowDiagram(r.Context(), project.ID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			projectSettings, err := sessionStore.getProjectSettings(r.Context(), project.ID)
+			if err != nil {
+				getProjectMethodError(w, err)
+				return
+			}
+
+			screens := make([]projectExportScreen, 0, len(snapshot.Screens))
+			for _, screen := range snapshot.Screens {
+				state, stateErr := sessionStore.getLatestState(r.Context(), screen.ID)
+				if stateErr != nil && !errors.Is(stateErr, sql.ErrNoRows) {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": stateErr.Error()})
+					return
+				}
+				if errors.Is(stateErr, sql.ErrNoRows) {
+					state = nil
+				}
+				screens = append(screens, projectExportScreen{
+					Screen:      screen,
+					LatestState: state,
+				})
+			}
+
+			source := projectExportSource{
+				Version:       "1.0",
+				ExportedAt:    time.Now().UTC().Format(time.RFC3339),
+				Project:       project,
+				Snapshot:      snapshot,
+				FlowDiagram:   flowDiagram,
+				ProjectConfig: projectSettings,
+				Screens:       screens,
+			}
+
+			mapper := payload.Mapper
+			if mapper == nil {
+				base := defaultProjectExportMapper()
+				mapper = &base
+			}
+			exported, err := transformProjectExport(source, *mapper)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+
+			exportBytes, err := json.MarshalIndent(exported, "", "  ")
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+
+			fileName := fmt.Sprintf("%s-export-%s.json", sanitizeFileName(project.Name), time.Now().UTC().Format("20060102-150405"))
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
+			w.WriteHeader(http.StatusOK)
+			if _, err := w.Write(exportBytes); err != nil {
+				log.Printf("failed to write export payload: %v", err)
+			}
+			return
+
 		case subPath == "flow-diagram":
 			if r.Method != http.MethodGet && r.Method != http.MethodPost {
 				w.WriteHeader(http.StatusMethodNotAllowed)
@@ -871,6 +953,197 @@ func writePlainText(w http.ResponseWriter, status int, text string) {
 	w.WriteHeader(status)
 	if _, err := w.Write([]byte(text)); err != nil {
 		log.Printf("failed to write text response: %v", err)
+	}
+}
+
+type projectExportScreen struct {
+	Screen      sessionScreenSummary `json:"screen"`
+	LatestState *screenSessionState  `json:"latestState"`
+}
+
+type projectExportSource struct {
+	Version       string                `json:"version"`
+	ExportedAt    string                `json:"exportedAt"`
+	Project       projectRecord         `json:"project"`
+	Snapshot      sessionSnapshot       `json:"snapshot"`
+	FlowDiagram   flowDiagramRecord     `json:"flowDiagram"`
+	ProjectConfig projectSettingsRecord `json:"projectSettings"`
+	Screens       []projectExportScreen `json:"screens"`
+}
+
+type exportTransformOperation struct {
+	Op           string         `json:"op"`
+	To           string         `json:"to"`
+	From         string         `json:"from,omitempty"`
+	Value        any            `json:"value,omitempty"`
+	ItemTemplate map[string]any `json:"itemTemplate,omitempty"`
+}
+
+type projectExportMapper struct {
+	Version    string                     `json:"version"`
+	OutputPath string                     `json:"outputPath"`
+	Operations []exportTransformOperation `json:"operations"`
+}
+
+func defaultProjectExportMapper() projectExportMapper {
+	return projectExportMapper{
+		Version:    "1.0",
+		OutputPath: "projectExport",
+		Operations: []exportTransformOperation{
+			{Op: "set", To: "meta.schema", Value: "realtime-prototype.project-export.v1"},
+			{Op: "copy", From: "exportedAt", To: "meta.exportedAt"},
+			{Op: "copy", From: "project.ID", To: "project.id"},
+			{Op: "copy", From: "project.Name", To: "project.name"},
+			{Op: "copy", From: "project.Theme", To: "project.theme"},
+			{Op: "copy", From: "project.ActiveScreen", To: "project.activeScreenId"},
+			{Op: "copy", From: "projectSettings", To: "project.settings"},
+			{Op: "copy", From: "flowDiagram.diagram", To: "flow.diagram"},
+			{Op: "copy", From: "flowDiagram.updatedAt", To: "flow.updatedAt"},
+			{
+				Op:   "mapArray",
+				From: "screens",
+				To:   "screens",
+				ItemTemplate: map[string]any{
+					"id":              "{{screen.id}}",
+					"name":            "{{screen.name}}",
+					"position":        "{{screen.position}}",
+					"isActive":        "{{screen.isActive}}",
+					"lastRevision":    "{{screen.lastRevision}}",
+					"updatedAt":       "{{screen.updatedAt}}",
+					"screenPayload":   "{{latestState.screenPayload}}",
+					"conversation":    "{{latestState.conversation}}",
+					"recommendations": "{{latestState.recommendations}}",
+				},
+			},
+		},
+	}
+}
+
+func transformProjectExport(source projectExportSource, mapper projectExportMapper) (map[string]any, error) {
+	if strings.TrimSpace(mapper.OutputPath) == "" {
+		return nil, fmt.Errorf("mapper outputPath is required")
+	}
+	if len(mapper.Operations) == 0 {
+		return nil, fmt.Errorf("mapper operations are required")
+	}
+
+	var sourceMap map[string]any
+	sourceBytes, err := json.Marshal(source)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(sourceBytes, &sourceMap); err != nil {
+		return nil, err
+	}
+
+	output := map[string]any{}
+	for _, op := range mapper.Operations {
+		switch strings.TrimSpace(op.Op) {
+		case "set":
+			if strings.TrimSpace(op.To) == "" {
+				return nil, fmt.Errorf("set operation requires 'to'")
+			}
+			setPathValue(output, op.To, op.Value)
+		case "copy":
+			if strings.TrimSpace(op.To) == "" || strings.TrimSpace(op.From) == "" {
+				return nil, fmt.Errorf("copy operation requires 'from' and 'to'")
+			}
+			setPathValue(output, op.To, getPathValue(sourceMap, op.From))
+		case "mapArray":
+			if strings.TrimSpace(op.To) == "" || strings.TrimSpace(op.From) == "" {
+				return nil, fmt.Errorf("mapArray operation requires 'from' and 'to'")
+			}
+			items, ok := getPathValue(sourceMap, op.From).([]any)
+			if !ok {
+				setPathValue(output, op.To, []any{})
+				continue
+			}
+			mapped := make([]any, 0, len(items))
+			for _, item := range items {
+				itemMap, ok := item.(map[string]any)
+				if !ok {
+					mapped = append(mapped, nil)
+					continue
+				}
+				mapped = append(mapped, resolveTemplateValue(op.ItemTemplate, itemMap))
+			}
+			setPathValue(output, op.To, mapped)
+		default:
+			return nil, fmt.Errorf("unsupported mapper operation: %s", op.Op)
+		}
+	}
+
+	root := map[string]any{}
+	setPathValue(root, mapper.OutputPath, output)
+	return root, nil
+}
+
+func resolveTemplateValue(template any, item map[string]any) any {
+	switch typed := template.(type) {
+	case string:
+		if strings.HasPrefix(typed, "{{") && strings.HasSuffix(typed, "}}") {
+			path := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(typed, "{{"), "}}"))
+			return getPathValue(item, path)
+		}
+		return typed
+	case map[string]any:
+		result := map[string]any{}
+		for key, value := range typed {
+			result[key] = resolveTemplateValue(value, item)
+		}
+		return result
+	case []any:
+		result := make([]any, 0, len(typed))
+		for _, value := range typed {
+			result = append(result, resolveTemplateValue(value, item))
+		}
+		return result
+	default:
+		return typed
+	}
+}
+
+func getPathValue(data map[string]any, path string) any {
+	parts := strings.Split(strings.TrimSpace(path), ".")
+	if len(parts) == 0 {
+		return nil
+	}
+	var current any = data
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil
+		}
+		asMap, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current = asMap[part]
+	}
+	return current
+}
+
+func setPathValue(target map[string]any, path string, value any) {
+	parts := strings.Split(strings.TrimSpace(path), ".")
+	if len(parts) == 0 {
+		return
+	}
+	current := target
+	for index, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return
+		}
+		if index == len(parts)-1 {
+			current[part] = value
+			return
+		}
+		next, ok := current[part].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			current[part] = next
+		}
+		current = next
 	}
 }
 
