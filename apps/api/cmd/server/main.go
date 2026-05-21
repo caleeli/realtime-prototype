@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -815,6 +816,26 @@ func main() {
 		writePlainText(w, http.StatusOK, output)
 	}))
 
+	mux.HandleFunc("/api/ux-improvements", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var input uxImprovementRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+			return
+		}
+
+		output, err := callCerebrasUXImprovements(r.Context(), input)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, output)
+	}))
+
 	registerProjectImageRoutes(mux, sessionStore)
 
 	addr := strings.TrimSpace(os.Getenv("PORT"))
@@ -1266,6 +1287,26 @@ type uxEvaluatorRequest struct {
 	Css                     string      `json:"css"`
 	Data                    interface{} `json:"data"`
 	PreviousRecommendations []string    `json:"previousRecommendations"`
+}
+
+type uxImprovementRequest struct {
+	Prompt     string             `json:"prompt"`
+	Context    *generationContext `json:"context"`
+	Pug        string             `json:"pug"`
+	Css        string             `json:"css"`
+	Data       interface{}        `json:"data"`
+	MaxResults int                `json:"maxResults"`
+}
+
+type uxImprovementIdea struct {
+	Selector    string `json:"selector"`
+	Improvement string `json:"improvement"`
+}
+
+type uxImprovementResult struct {
+	Selector    string             `json:"selector"`
+	Improvement string             `json:"improvement"`
+	Screen      generationResponse `json:"screen"`
 }
 
 type cerebrasChatMessage struct {
@@ -2950,6 +2991,157 @@ func filterUXRecommendations(recommendations []string) []string {
 	}
 
 	return filtered
+}
+
+func callCerebrasUXImprovements(ctx context.Context, input uxImprovementRequest) ([]uxImprovementResult, error) {
+	apiKey := strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY"))
+	if apiKey == "" {
+		return nil, errMissingCerebrasKey
+	}
+
+	endpoint := strings.TrimSpace(os.Getenv("CEREBRAS_API_URL"))
+	if endpoint == "" {
+		endpoint = cerebrasDefaultEndpoint
+	}
+	model := strings.TrimSpace(os.Getenv("CEREBRAS_MODEL"))
+	if model == "" {
+		model = cerebrasDefaultModel
+	}
+
+	if input.Data == nil {
+		input.Data = map[string]interface{}{}
+	}
+
+	maxResults := input.MaxResults
+	if maxResults <= 0 {
+		maxResults = parseIntFromEnv("UX_IMPROVEMENTS_MAX_RESULTS", 3)
+	}
+	if maxResults < 1 {
+		maxResults = 1
+	}
+	if maxResults > 10 {
+		maxResults = 10
+	}
+
+	dataJSON, err := json.Marshal(input.Data)
+	if err != nil {
+		dataJSON = []byte("{}")
+	}
+
+	systemPrompt := `You are a UX improver for Vue/BootstrapVue screens.
+Return ONLY valid JSON with this exact shape:
+{"ideas":[{"selector":"...", "improvement":"..."}]}
+Rules:
+- Return up to the requested max ideas.
+- Each selector must target a concrete visible area using CSS selectors only.
+- Use ids/classes/tags that plausibly exist in the provided pug.
+- Each improvement must be a short actionable feature enhancement.
+- No markdown, no explanations, no extra keys.`
+
+	userPrompt := fmt.Sprintf(
+		"Analyze this generated screen and propose up to %d improvements on specific screen areas.\n\nOriginal prompt:\n%s\n\nPug:\n%s\n\nCss:\n%s\n\nData JSON:\n%s",
+		maxResults,
+		strings.TrimSpace(input.Prompt),
+		input.Pug,
+		input.Css,
+		string(dataJSON),
+	)
+
+	timeoutMs := parseIntFromEnv("CEREBRAS_TIMEOUT_MS", 20000)
+	clientTimeout := time.Duration(timeoutMs) * time.Millisecond
+	ideasRaw, err := requestCerebrasContent(
+		ctx,
+		endpoint,
+		model,
+		apiKey,
+		clientTimeout,
+		[]cerebrasChatMessage{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userPrompt},
+		},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	jsonCandidate, err := extractJSONFromText(ideasRaw)
+	if err != nil {
+		return nil, fmt.Errorf("ux improvement ideas are not valid JSON: %w", err)
+	}
+
+	var parsed struct {
+		Ideas []uxImprovementIdea `json:"ideas"`
+	}
+	if err := json.Unmarshal([]byte(jsonCandidate), &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse ux improvement ideas: %w", err)
+	}
+	if len(parsed.Ideas) == 0 {
+		return []uxImprovementResult{}, nil
+	}
+
+	ideas := make([]uxImprovementIdea, 0, maxResults)
+	seen := map[string]struct{}{}
+	for _, idea := range parsed.Ideas {
+		selector := strings.TrimSpace(idea.Selector)
+		improvement := strings.TrimSpace(idea.Improvement)
+		if selector == "" || improvement == "" {
+			continue
+		}
+		key := strings.ToLower(selector + "|" + improvement)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		ideas = append(ideas, uxImprovementIdea{
+			Selector:    selector,
+			Improvement: improvement,
+		})
+		if len(ideas) >= maxResults {
+			break
+		}
+	}
+
+	results := make([]uxImprovementResult, len(ideas))
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(ideas))
+
+	for i, idea := range ideas {
+		wg.Add(1)
+		go func(index int, currentIdea uxImprovementIdea) {
+			defer wg.Done()
+			generated, generationErr := callCerebrasGeneration(ctx, generationRequest{
+				Prompt: fmt.Sprintf(
+					"Apply ONLY this UX improvement to the current screen while preserving the overall structure and existing data semantics.\nTarget selector: %s\nImprovement: %s",
+					currentIdea.Selector,
+					currentIdea.Improvement,
+				),
+				Context:     input.Context,
+				CurrentPug:  input.Pug,
+				CurrentCss:  input.Css,
+				CurrentData: input.Data,
+			})
+			if generationErr != nil {
+				errCh <- fmt.Errorf("failed to generate improvement for selector %q: %w", currentIdea.Selector, generationErr)
+				return
+			}
+			results[index] = uxImprovementResult{
+				Selector:    currentIdea.Selector,
+				Improvement: currentIdea.Improvement,
+				Screen:      generated,
+			}
+		}(i, idea)
+	}
+	wg.Wait()
+	close(errCh)
+
+	for generationErr := range errCh {
+		if generationErr != nil {
+			return nil, generationErr
+		}
+	}
+
+	return results, nil
 }
 
 func buildCerebrasRequestMessages(input generationRequest) []cerebrasChatMessage {

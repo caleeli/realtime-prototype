@@ -18,6 +18,7 @@ import '@vue-flow/core/dist/style.css';
 import {
   GenerationPipelineService,
   type UXEvaluatorResultLine,
+  type UXImprovementResult,
   type GenerationMessage,
   type InspirationRequest,
   type GenerationRequest,
@@ -109,6 +110,17 @@ interface UXRecommendationBubble {
   requestText: string;
 }
 
+interface SelectorImprovementBubble {
+  id: string;
+  selector: string;
+  improvement: string;
+  pipelineOutput: GenerationPipelineResult;
+  previewComponent: Component;
+  cleanupStyles: () => void;
+  top: number;
+  left: number;
+}
+
 interface DataGenerationHistoryEntry {
   instruction: string;
   previousData: unknown;
@@ -194,6 +206,7 @@ const didUseInspiration = ref(false);
 const message = ref('Escribe una descripción y pulsa "Generar pantalla".');
 const generatedState: Ref<GeneratedViewState | null> = ref(null);
 const generatedComponent: Ref<Component | null> = ref(null);
+const canvasContentRef = ref<HTMLElement | null>(null);
 type PopupRuntimeState = {
   isOpen: boolean;
   screenId: string;
@@ -213,6 +226,9 @@ const popupState = ref<PopupRuntimeState>({
   cleanup: null,
 });
 const uxEvaluations: Ref<UXEvaluatorResultLine[]> = ref([]);
+const selectorImprovementBubbles = ref<SelectorImprovementBubble[]>([]);
+const isGeneratingSelectorImprovements = ref(false);
+const hoveredSelectorImprovementId = ref<string | null>(null);
 const screens = ref<SessionScreenSummary[]>([]);
 const activeScreenId = ref('');
 const isSessionLoading = ref(false);
@@ -2226,6 +2242,7 @@ watch(activeTheme, async (theme) => {
 onMounted(async () => {
   window.addEventListener('keydown', isThemeHotkey);
   window.addEventListener('hashchange', onHashChange);
+  window.addEventListener('resize', onWindowResize);
   try {
     isHydratingSession.value = true;
     await loadProjects();
@@ -2325,6 +2342,7 @@ function clearGeneratedState(reason = 'Pantalla vacía. Genera para visualizar.'
   generatedState.value = null;
   generatedComponent.value = null;
   lastGeneratedOutput.value = null;
+  clearSelectorImprovementBubbles();
   isScreenDirty.value = false;
   message.value = reason;
 }
@@ -2354,6 +2372,7 @@ function getFallbackScreenIdForDeletion(removedScreenId: string): string | null 
 }
 
 async function hydrateFromSessionState(state: SessionScreenState | null) {
+  clearSelectorImprovementBubbles();
   if (!state) {
     clearGeneratedState('Esta pantalla aún no tiene estado guardado. Genera una versión para persistirla.');
     conversation.value = [];
@@ -3184,6 +3203,18 @@ const actionableUxRecommendations = computed<UXRecommendationBubble[]>(() => {
     });
 });
 
+const hoveredSelectorImprovement = computed<SelectorImprovementBubble | null>(() => {
+  const hoveredId = hoveredSelectorImprovementId.value;
+  if (!hoveredId) {
+    return null;
+  }
+  return selectorImprovementBubbles.value.find((entry) => entry.id === hoveredId) ?? null;
+});
+
+const displayedGeneratedComponent = computed<Component | null>(() => {
+  return hoveredSelectorImprovement.value?.previewComponent ?? generatedComponent.value;
+});
+
 const statusBarValidation = computed(() => {
   if (uxEvaluationStatus.value === 'loading') {
     return 'Evaluando interfaz…';
@@ -3230,6 +3261,137 @@ function getScreenSaveState(screen: SessionScreenSummary) {
 
 function buildUserPayloadMessages(history: ChatMessage[]): GenerationMessage[] {
   return toApiMessages(history);
+}
+
+function clearSelectorImprovementBubbles() {
+  hoveredSelectorImprovementId.value = null;
+  for (const entry of selectorImprovementBubbles.value) {
+    entry.cleanupStyles();
+  }
+  selectorImprovementBubbles.value = [];
+}
+
+function recalculateSelectorImprovementPositions() {
+  const container = canvasContentRef.value;
+  if (!container) {
+    return;
+  }
+  const containerRect = container.getBoundingClientRect();
+  const updated: SelectorImprovementBubble[] = [];
+  for (const entry of selectorImprovementBubbles.value) {
+    const element = container.querySelector(entry.selector);
+    if (!element) {
+      continue;
+    }
+    const targetRect = element.getBoundingClientRect();
+    entry.top = Math.max(0, targetRect.top - containerRect.top);
+    entry.left = Math.max(0, targetRect.left - containerRect.left);
+    updated.push(entry);
+  }
+  selectorImprovementBubbles.value = updated;
+}
+
+function onWindowResize() {
+  recalculateSelectorImprovementPositions();
+}
+
+async function generateSelectorImprovements(
+  prompt: string,
+  pipelineOutput: GenerationPipelineResult,
+): Promise<void> {
+  clearSelectorImprovementBubbles();
+  isGeneratingSelectorImprovements.value = true;
+
+  try {
+    const ideas = await pipelineService.generateUXImprovements({
+      prompt,
+      context: buildGenerationContextForAI(),
+      pug: pipelineOutput.sourcePug,
+      css: pipelineOutput.css,
+      data: cloneDataValue(pipelineOutput.data),
+    });
+
+    if (ideas.length === 0) {
+      return;
+    }
+
+    const built = await Promise.all(
+      ideas.map(async (idea: UXImprovementResult, index: number) => {
+        const improvedOutput = await pipelineService.renderFromStoredState({
+          pug: idea.screen.pug,
+          css: idea.screen.css,
+          data: idea.screen.data,
+          messages: idea.screen.messages,
+        });
+        const renderedView = await buildGeneratedScreen(improvedOutput, {
+          componentLoaders,
+          styleId: `pipeline-runtime-ux-improvement-${screenRevision.value + 1}-${index}`,
+          runtimeContext: createRuntimeContext(),
+        });
+        return {
+          id: `selector-improvement-${index}-${idea.selector}`,
+          selector: idea.selector,
+          improvement: idea.improvement,
+          pipelineOutput: improvedOutput,
+          previewComponent: markRaw(renderedView.component),
+          cleanupStyles: renderedView.installStyles,
+          top: 0,
+          left: 0,
+        } as SelectorImprovementBubble;
+      }),
+    );
+
+    selectorImprovementBubbles.value = built;
+    await nextTick();
+    recalculateSelectorImprovementPositions();
+  } catch (_error) {
+    clearSelectorImprovementBubbles();
+  } finally {
+    isGeneratingSelectorImprovements.value = false;
+  }
+}
+
+async function applySelectorImprovement(bubble: SelectorImprovementBubble) {
+  if (isGenerating.value || isSaving.value) {
+    return;
+  }
+
+  try {
+    const previousStyleCleanup = cleanupStyle.value;
+    const renderedView = await buildGeneratedScreen(bubble.pipelineOutput, {
+      componentLoaders,
+      styleId: `pipeline-runtime-applied-improvement-${screenRevision.value + 1}`,
+      runtimeContext: createRuntimeContext(),
+    });
+
+    cleanupStyle.value = renderedView.installStyles;
+    generatedState.value = {
+      view: renderedView,
+      component: renderedView.component,
+    };
+    generatedComponent.value = markRaw(renderedView.component);
+    lastGeneratedOutput.value = bubble.pipelineOutput;
+    screenRevision.value += 1;
+    isScreenDirty.value = true;
+
+    if (previousStyleCleanup) {
+      previousStyleCleanup();
+    }
+
+    const note = `[Low] ${bubble.selector} - ${bubble.improvement}`;
+    uxEvaluations.value = sortUxRecommendationsByPriority([
+      ...uxEvaluations.value,
+      note,
+    ]);
+    clearSelectorImprovementBubbles();
+    message.value = `Mejora aplicada sobre ${bubble.selector}.`;
+
+    if (activeScreenId.value.trim()) {
+      await saveCurrentScreen();
+    }
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : 'No se pudo aplicar la mejora.';
+  }
 }
 
 async function renderPipeline(prompt: string, history: ChatMessage[]) {
@@ -3307,6 +3469,8 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
     clearDataGenerationHistory();
     clearPugGenerationHistory();
     screenRevision.value += 1;
+    await nextTick();
+    void generateSelectorImprovements(prompt, pipelineOutput);
 
     if (previousStyleCleanup) {
       previousStyleCleanup();
@@ -3317,6 +3481,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
       : 'Pantalla renderizada correctamente.';
   isScreenDirty.value = true;
   } catch (error) {
+    clearSelectorImprovementBubbles();
     message.value = error instanceof Error ? error.message : 'No se pudo generar la pantalla.';
   } finally {
     isGenerating.value = false;
@@ -3903,6 +4068,7 @@ function toggleBuilderPanelMinimized() {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', isThemeHotkey);
   window.removeEventListener('hashchange', onHashChange);
+  window.removeEventListener('resize', onWindowResize);
   if (popupState.value.cleanup) {
     popupState.value.cleanup();
   }
@@ -3910,6 +4076,7 @@ onBeforeUnmount(() => {
     cleanupStyle.value();
     cleanupStyle.value = null;
   }
+  clearSelectorImprovementBubbles();
   detachExecutionSubmitInterceptor();
   if (flowDiagramSaveTimer.value) {
     clearTimeout(flowDiagramSaveTimer.value);
@@ -4380,8 +4547,25 @@ function onPromptKeydown(event: KeyboardEvent) {
 
       <article v-show="editorWorkspaceTab === 'canvas'" class="canvas-surface">
         <Transition :name="themeTransitionDirection === 'left' ? 'canvas-swipe-left' : 'canvas-swipe-right'" mode="out-in">
-          <div v-if="generatedComponent" :key="themeTransitionKey" class="canvas-content">
-            <component :is="generatedComponent" />
+          <div v-if="displayedGeneratedComponent" :key="themeTransitionKey" ref="canvasContentRef" class="canvas-content">
+            <component :is="displayedGeneratedComponent" />
+            <div v-if="selectorImprovementBubbles.length > 0" class="selector-improvement-overlay">
+              <button
+                v-for="(bubble, index) in selectorImprovementBubbles"
+                :key="bubble.id"
+                type="button"
+                class="selector-improvement-bubble"
+                :style="{ top: `${bubble.top}px`, left: `${bubble.left}px` }"
+                :title="bubble.improvement"
+                @mouseenter="hoveredSelectorImprovementId = bubble.id"
+                @mouseleave="hoveredSelectorImprovementId = null"
+                @focus="hoveredSelectorImprovementId = bubble.id"
+                @blur="hoveredSelectorImprovementId = null"
+                @click="applySelectorImprovement(bubble)"
+              >
+                {{ index + 1 }}
+              </button>
+            </div>
           </div>
           <div v-else :key="`empty-${activeTheme}`" class="canvas-state">{{ message }}</div>
         </Transition>
@@ -4404,6 +4588,9 @@ function onPromptKeydown(event: KeyboardEvent) {
             <span class="canvas-status-dot" aria-hidden="true"></span>
             {{ generatedComponent ? 'Actualizando pantalla...' : 'Generando pantalla...' }}
           </div>
+        </div>
+        <div v-if="isGeneratingSelectorImprovements && !isGenerating" class="canvas-status-layer canvas-status-layer--secondary">
+          <div class="canvas-status-chip">Analizando mejoras UX por zonas...</div>
         </div>
       </article>
 
@@ -6400,7 +6587,36 @@ function onPromptKeydown(event: KeyboardEvent) {
 }
 
 .canvas-content {
+  position: relative;
   padding: 1rem;
+}
+
+.selector-improvement-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.selector-improvement-bubble {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  border: 1px solid rgba(var(--bs-info-rgb), 0.7);
+  background: color-mix(in srgb, rgba(var(--bs-info-rgb), 0.82) 52%, var(--rp-bg-panel));
+  color: #fff;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: var(--rp-shadow-sm);
+}
+
+.selector-improvement-bubble:hover,
+.selector-improvement-bubble:focus-visible {
+  transform: translate(-50%, -50%) scale(1.08);
 }
 
 .screen-confirm-backdrop {
@@ -6583,6 +6799,12 @@ function onPromptKeydown(event: KeyboardEvent) {
   background: rgba(248, 249, 251, 0.75);
   backdrop-filter: blur(2px);
   pointer-events: none;
+}
+
+.canvas-status-layer--secondary {
+  inset: auto auto 1rem 1rem;
+  background: transparent;
+  display: block;
 }
 
 .canvas-status-chip {

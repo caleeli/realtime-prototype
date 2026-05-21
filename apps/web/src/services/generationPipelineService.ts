@@ -135,6 +135,26 @@ export interface UXEvaluatorRequest {
   readonly previousRecommendations?: string[];
 }
 
+export interface UXImprovementRequest {
+  readonly prompt: string;
+  readonly context?: GenerationContext;
+  readonly pug: string;
+  readonly css: string;
+  readonly data?: unknown;
+  readonly maxResults?: number;
+}
+
+export interface UXImprovementResult {
+  readonly selector: string;
+  readonly improvement: string;
+  readonly screen: {
+    readonly pug: string;
+    readonly css: string;
+    readonly data: unknown;
+    readonly messages: GenerationMessage[];
+  };
+}
+
 export class GenerationServiceError extends Error {
   constructor(
     message: string,
@@ -151,6 +171,7 @@ const DATA_GENERATION_ENDPOINT = '/api/data-generation';
 const PUG_GENERATION_ENDPOINT = '/pug-generation';
 const BASE_INSPIRATION_ENDPOINT = '/inspiration';
 const UX_EVALUATOR_ENDPOINT = '/ux-evaluator';
+const UX_IMPROVEMENTS_ENDPOINT = '/ux-improvements';
 const DEFAULT_GENERATION_TIMEOUT_MS = readFrontendTimeoutEnv('VITE_GENERATION_TIMEOUT_MS', 30000);
 const DEFAULT_INSPIRATION_TIMEOUT_MS = readFrontendTimeoutEnv('VITE_INSPIRATION_TIMEOUT_MS', 120000);
 const DEFAULT_EVALUATOR_TIMEOUT_MS = readFrontendTimeoutEnv('VITE_EVALUATOR_TIMEOUT_MS', 30000);
@@ -1094,6 +1115,7 @@ export class GenerationPipelineService {
   private readonly pugEndpoint: string;
   private readonly inspirationEndpoint: string;
   private readonly evaluatorEndpoint: string;
+  private readonly uxImprovementsEndpoint: string;
   private readonly generationTimeoutMs: number;
   private readonly inspirationTimeoutMs: number;
   private readonly evaluatorTimeoutMs: number;
@@ -1108,6 +1130,7 @@ export class GenerationPipelineService {
     this.pugEndpoint = `${baseUrl}${PUG_GENERATION_ENDPOINT}`;
     this.inspirationEndpoint = `${baseUrl}${BASE_INSPIRATION_ENDPOINT}`;
     this.evaluatorEndpoint = `${baseUrl}${UX_EVALUATOR_ENDPOINT}`;
+    this.uxImprovementsEndpoint = `${baseUrl}${UX_IMPROVEMENTS_ENDPOINT}`;
     this.generationTimeoutMs = options.generationTimeoutMs ?? DEFAULT_GENERATION_TIMEOUT_MS;
     this.inspirationTimeoutMs = options.inspirationTimeoutMs ?? DEFAULT_INSPIRATION_TIMEOUT_MS;
     this.evaluatorTimeoutMs = options.evaluatorTimeoutMs ?? DEFAULT_EVALUATOR_TIMEOUT_MS;
@@ -1263,6 +1286,49 @@ export class GenerationPipelineService {
     return normalizeUxEvaluationText(text);
   }
 
+  private async fetchUXImprovements(input: UXImprovementRequest): Promise<UXImprovementResult[]> {
+    const response = await this.fetchWithTimeout(
+      this.uxImprovementsEndpoint,
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: JSON.stringify(input),
+      },
+      this.evaluatorTimeoutMs,
+      'UX improvements',
+    );
+
+    const body = await response.text();
+    if (!response.ok) {
+      throw new GenerationServiceError(`UX improvements failed with ${response.status}`, response.status, body);
+    }
+
+    const parsed = safeParseJSON(body);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map((item): UXImprovementResult | null => {
+        if (!item || typeof item !== 'object') {
+          return null;
+        }
+        const candidate = item as Record<string, unknown>;
+        const selector = typeof candidate.selector === 'string' ? candidate.selector.trim() : '';
+        const improvement = typeof candidate.improvement === 'string' ? candidate.improvement.trim() : '';
+        const rawScreen = candidate.screen as Record<string, unknown> | undefined;
+        if (!selector || !improvement || !rawScreen || typeof rawScreen !== 'object') {
+          return null;
+        }
+        const normalizedScreen = normalizeBackendResponse(rawScreen);
+        return {
+          selector,
+          improvement,
+          screen: normalizedScreen,
+        };
+      })
+      .filter((entry): entry is UXImprovementResult => entry !== null);
+  }
+
   async generate(input: GenerationRequest, catalog?: ComponentInventoryItem[]): Promise<GenerationPipelineResult> {
     const output = await this.fetchGeneration(input);
     return this.renderPipelineOutput(output, catalog);
@@ -1327,6 +1393,10 @@ export class GenerationPipelineService {
 
   async evaluateUX(input: UXEvaluatorRequest): Promise<UXEvaluatorResultLine[]> {
     return this.fetchUXEvaluation(input);
+  }
+
+  async generateUXImprovements(input: UXImprovementRequest): Promise<UXImprovementResult[]> {
+    return this.fetchUXImprovements(input);
   }
 }
 
