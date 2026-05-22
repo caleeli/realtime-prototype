@@ -40,6 +40,8 @@ const generationSystemPromptTemplatePath = "cmd/server/generation-system-prompt.
 const generationSystemPromptTemplateEnv = "GENERATION_SYSTEM_PROMPT_PATH"
 const uxEvaluatorSystemPromptTemplatePath = "cmd/server/ux-evaluator.txt"
 const uxEvaluatorSystemPromptTemplateEnv = "UX_EVALUATOR_SYSTEM_PROMPT_PATH"
+const uxImprovementsPromptTemplatePath = "cmd/server/ux-improvements-prompt.txt"
+const uxImprovementsPromptTemplateEnv = "UX_IMPROVEMENTS_PROMPT_PATH"
 const inspirationConversionPromptTemplatePath = "cmd/server/inspiration-conversion-prompt.txt"
 const inspirationConversionPromptTemplateEnv = "INSPIRATION_CONVERSION_PROMPT_PATH"
 const generationRepairEnabledEnv = "GENERATION_REPAIR_ENABLED"
@@ -3028,24 +3030,20 @@ func callCerebrasUXImprovements(ctx context.Context, input uxImprovementRequest)
 		dataJSON = []byte("{}")
 	}
 
-	systemPrompt := `You are a UX improver for Vue/BootstrapVue screens.
-Return ONLY valid JSON with this exact shape:
-{"ideas":[{"selector":"...", "improvement":"..."}]}
-Rules:
-- Return up to the requested max ideas.
-- Each selector must target a concrete visible area using CSS selectors only.
-- Use ids/classes/tags that plausibly exist in the provided pug.
-- Each improvement must be a short actionable feature enhancement.
-- No markdown, no explanations, no extra keys.`
-
-	userPrompt := fmt.Sprintf(
-		"Analyze this generated screen and propose up to %d improvements on specific screen areas.\n\nOriginal prompt:\n%s\n\nPug:\n%s\n\nCss:\n%s\n\nData JSON:\n%s",
-		maxResults,
-		strings.TrimSpace(input.Prompt),
-		input.Pug,
-		input.Css,
-		string(dataJSON),
+	fullPrompt := loadPromptTemplateFromEnv(
+		uxImprovementsPromptTemplatePath,
+		uxImprovementsPromptTemplateEnv,
+		defaultUxImprovementsPromptTemplate(),
 	)
+	systemPrompt, templatePrompt, err := splitPromptFile(fullPrompt)
+	if err != nil {
+		return nil, err
+	}
+	userPrompt := strings.ReplaceAll(templatePrompt, "{{maxResults}}", strconv.Itoa(maxResults))
+	userPrompt = strings.ReplaceAll(userPrompt, "{{prompt}}", strings.TrimSpace(input.Prompt))
+	userPrompt = strings.ReplaceAll(userPrompt, "{{{pug}}}", input.Pug)
+	userPrompt = strings.ReplaceAll(userPrompt, "{{{css}}}", input.Css)
+	userPrompt = strings.ReplaceAll(userPrompt, "{{{data}}}", string(dataJSON))
 
 	timeoutMs := parseIntFromEnv("CEREBRAS_TIMEOUT_MS", 20000)
 	clientTimeout := time.Duration(timeoutMs) * time.Millisecond
@@ -3142,6 +3140,37 @@ Rules:
 	}
 
 	return results, nil
+}
+
+func defaultUxImprovementsPromptTemplate() string {
+	return `You are a UX improver for Vue/BootstrapVue screens.
+Return ONLY valid JSON with this exact shape:
+{"ideas":[{"selector":"...", "improvement":"..."}]}
+Rules:
+- Return up to the requested max ideas.
+- Each selector must target a concrete visible area using CSS selectors only.
+- Use ids/classes/tags that plausibly exist in the provided pug.
+- Each improvement must be a short actionable feature enhancement that can be implemented by changing Pug/CSS/Data.
+- Prioritize ideas that ADD new functionality or workflows (not only visual tweaks or wording).
+- Good examples: add filters, search, sorting, bulk actions, quick actions, contextual menus, empty/loading/error states, inline edit, pagination, stepper flow, confirmation patterns, shortcuts, analytics widgets, or role-specific actions.
+- Avoid limiting output to accessibility-only suggestions (ARIA/labels/tooltips) unless that is clearly the highest-impact gap.
+- Prefer improvements with measurable user value (faster task completion, fewer errors, better decision support).
+- Keep each idea scoped to one selector but the functionality may introduce new UI elements near that selector.
+- No markdown, no explanations, no extra keys.
+---
+Analyze this generated screen and propose up to {{maxResults}} improvements on specific screen areas.
+
+Original prompt:
+{{prompt}}
+
+Pug:
+{{{pug}}}
+
+Css:
+{{{css}}}
+
+Data JSON:
+{{{data}}}`
 }
 
 func buildCerebrasRequestMessages(input generationRequest) []cerebrasChatMessage {

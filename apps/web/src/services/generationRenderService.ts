@@ -1150,7 +1150,15 @@ export class GenerationRenderService {
         },
         render() {
           const vm = this as Record<string, unknown>;
-          return h('div', {}, renderNodesWithStyle(compiledRender(vm, [])));
+          try {
+            return h('div', {}, renderNodesWithStyle(compiledRender(vm, [])));
+          } catch (_error) {
+            const fallbackChildren = collectChildren(output.template, vm as PipelineScreenData, componentRegistry);
+            if (typeof fallbackChildren === 'string') {
+              return h('div', { class: 'generated-screen' }, renderNodesWithStyle(fallbackChildren));
+            }
+            return h('div', { class: 'generated-screen' }, renderNodesWithStyle(fallbackChildren));
+          }
         },
       });
     } catch (_error) {

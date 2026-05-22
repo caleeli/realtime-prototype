@@ -4,6 +4,7 @@ import {
   defineComponent,
   h,
   markRaw,
+  onErrorCaptured,
   type Component,
   onBeforeUnmount,
   onMounted,
@@ -49,6 +50,44 @@ const pipelineService = new GenerationPipelineService({
 });
 const sessionService = new ProjectSessionService({
   baseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api',
+});
+
+const SafeDynamicPreview = defineComponent({
+  name: 'SafeDynamicPreview',
+  props: {
+    component: {
+      type: Object as () => Component | null,
+      default: null,
+    },
+  },
+  setup(props) {
+    const hasError = ref(false);
+    const errorMessage = ref('');
+
+    watch(
+      () => props.component,
+      () => {
+        hasError.value = false;
+        errorMessage.value = '';
+      },
+    );
+
+    onErrorCaptured((error) => {
+      hasError.value = true;
+      errorMessage.value = error instanceof Error ? error.message : 'Preview inválido';
+      return false;
+    });
+
+    return () => {
+      if (hasError.value) {
+        return h('div', { class: 'selector-improvement-preview-error' }, `No se pudo renderizar el preview: ${errorMessage.value}`);
+      }
+      if (!props.component) {
+        return h('div', { class: 'selector-improvement-preview-error' }, 'Preview no disponible.');
+      }
+      return h(props.component);
+    };
+  },
 });
 
 function createFallbackComponent(tag: string): GenerationRenderOptions['componentLoaders'][string] {
@@ -3211,10 +3250,6 @@ const hoveredSelectorImprovement = computed<SelectorImprovementBubble | null>(()
   return selectorImprovementBubbles.value.find((entry) => entry.id === hoveredId) ?? null;
 });
 
-const displayedGeneratedComponent = computed<Component | null>(() => {
-  return hoveredSelectorImprovement.value?.previewComponent ?? generatedComponent.value;
-});
-
 const statusBarValidation = computed(() => {
   if (uxEvaluationStatus.value === 'loading') {
     return 'Evaluando interfaz…';
@@ -3315,7 +3350,7 @@ async function generateSelectorImprovements(
       return;
     }
 
-    const built = await Promise.all(
+    const builtSettled = await Promise.allSettled(
       ideas.map(async (idea: UXImprovementResult, index: number) => {
         const improvedOutput = await pipelineService.renderFromStoredState({
           pug: idea.screen.pug,
@@ -3340,7 +3375,9 @@ async function generateSelectorImprovements(
         } as SelectorImprovementBubble;
       }),
     );
-
+    const built = builtSettled
+      .filter((entry): entry is PromiseFulfilledResult<SelectorImprovementBubble> => entry.status === 'fulfilled')
+      .map((entry) => entry.value);
     selectorImprovementBubbles.value = built;
     await nextTick();
     recalculateSelectorImprovementPositions();
@@ -3498,6 +3535,27 @@ async function onGenerate() {
   }
 
   await runGenerationFromPrompt(trimmed);
+}
+
+async function onGenerateUxImprovementsManual() {
+  if (isGenerating.value || isGeneratingSelectorImprovements.value) {
+    return;
+  }
+
+  const output = lastGeneratedOutput.value;
+  if (!output) {
+    message.value = 'Primero genera una pantalla para evaluar mejoras UX.';
+    return;
+  }
+
+  const promptForImprovements = lastUserMessage.value?.content?.trim() || promptText.value.trim() || 'Improve current screen';
+  message.value = 'Solicitando mejoras UX manualmente...';
+  await generateSelectorImprovements(promptForImprovements, output);
+  if (selectorImprovementBubbles.value.length > 0) {
+    message.value = `Se detectaron ${selectorImprovementBubbles.value.length} mejora(s) UX.`;
+  } else {
+    message.value = 'No se detectaron mejoras UX aplicables.';
+  }
 }
 
 async function onCreateScreenClick() {
@@ -4362,6 +4420,18 @@ function onPromptKeydown(event: KeyboardEvent) {
           <button
             type="button"
             class="conversation-refresh prompt-action-btn"
+            :disabled="isGenerating || isGeneratingSelectorImprovements || !lastGeneratedOutput"
+            title="Evaluar mejoras UX manualmente"
+            aria-label="Evaluar mejoras UX manualmente"
+            @click="onGenerateUxImprovementsManual"
+          >
+            <span v-if="isGeneratingSelectorImprovements" class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            <i v-else class="bi bi-lightning-charge" aria-hidden="true"></i>
+            <span class="visually-hidden">Evaluar mejoras UX manualmente</span>
+          </button>
+          <button
+            type="button"
+            class="conversation-refresh prompt-action-btn"
             :disabled="isGenerating || lastUserMessageIndex < 0"
             title="Regenerar desde el último mensaje (Ctrl + Enter)"
             aria-label="Regenerar desde el último mensaje"
@@ -4547,8 +4617,8 @@ function onPromptKeydown(event: KeyboardEvent) {
 
       <article v-show="editorWorkspaceTab === 'canvas'" class="canvas-surface">
         <Transition :name="themeTransitionDirection === 'left' ? 'canvas-swipe-left' : 'canvas-swipe-right'" mode="out-in">
-          <div v-if="displayedGeneratedComponent" :key="themeTransitionKey" ref="canvasContentRef" class="canvas-content">
-            <component :is="displayedGeneratedComponent" />
+          <div v-if="generatedComponent" :key="themeTransitionKey" ref="canvasContentRef" class="canvas-content">
+            <component :is="generatedComponent" />
             <div v-if="selectorImprovementBubbles.length > 0" class="selector-improvement-overlay">
               <button
                 v-for="(bubble, index) in selectorImprovementBubbles"
@@ -4569,6 +4639,16 @@ function onPromptKeydown(event: KeyboardEvent) {
           </div>
           <div v-else :key="`empty-${activeTheme}`" class="canvas-state">{{ message }}</div>
         </Transition>
+        <aside v-if="hoveredSelectorImprovement" class="selector-improvement-preview" aria-live="polite">
+          <p class="selector-improvement-preview-title">{{ hoveredSelectorImprovement.selector }}</p>
+          <p class="selector-improvement-preview-text">{{ hoveredSelectorImprovement.improvement }}</p>
+          <div class="selector-improvement-preview-canvas">
+            <SafeDynamicPreview
+              :key="hoveredSelectorImprovement.id"
+              :component="hoveredSelectorImprovement.previewComponent"
+            />
+          </div>
+        </aside>
         <div v-if="popupState.isOpen" class="screen-popup-backdrop" role="dialog" aria-modal="true" aria-label="Pantalla modal" @click="closePopupScreen">
           <div class="screen-popup-panel" @click.stop>
             <header class="screen-popup-header">
@@ -6617,6 +6697,69 @@ function onPromptKeydown(event: KeyboardEvent) {
 .selector-improvement-bubble:hover,
 .selector-improvement-bubble:focus-visible {
   transform: translate(-50%, -50%) scale(1.08);
+}
+
+.selector-improvement-preview {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  width: clamp(560px, 62vw, 1100px);
+  max-height: 72vh;
+  overflow: auto;
+  border: 1px solid var(--rp-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--rp-bg-panel) 94%, #ffffff);
+  box-shadow: var(--rp-shadow-md);
+  z-index: 30;
+  padding: 0.55rem;
+}
+
+.selector-improvement-preview-title {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  color: var(--rp-text);
+  font-weight: 700;
+}
+
+.selector-improvement-preview-text {
+  margin: 0 0 0.45rem;
+  font-size: 0.72rem;
+  color: var(--rp-text-muted);
+}
+
+.selector-improvement-preview-canvas {
+  border: 1px solid var(--rp-border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0.35rem;
+  overflow: auto;
+}
+
+.selector-improvement-preview-canvas > * {
+  transform: scale(0.72);
+  transform-origin: top left;
+  width: 138.9%;
+}
+
+.selector-improvement-preview-error {
+  font-size: 0.78rem;
+  color: #b91c1c;
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 8px;
+  padding: 0.55rem;
+}
+
+@media (max-width: 1024px) {
+  .selector-improvement-preview {
+    width: clamp(380px, 86vw, 760px);
+    max-height: 64vh;
+  }
+
+  .selector-improvement-preview-canvas > * {
+    transform: scale(0.68);
+    width: 147.1%;
+  }
 }
 
 .screen-confirm-backdrop {
