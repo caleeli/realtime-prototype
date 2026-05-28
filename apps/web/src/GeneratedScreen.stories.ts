@@ -234,6 +234,41 @@ export const LoginFormWithPrependTemplates: Story = {
   },
 };
 
+export const LoginFormWithoutDeclaredMethod: Story = {
+  args: {
+    ...meta.args,
+    pug: [
+      'div.login-screen',
+      '  h1.title Login without script',
+      '  b-form(@submit.prevent="onSubmit")',
+      '    b-form-input(type="email" v-model="form.email" placeholder="Email")',
+      '    b-button.btn-primary(type="submit") Submit',
+    ].join('\n'),
+    css: [
+      '.login-screen {',
+      '  max-width: 420px;',
+      '  margin: 0 auto;',
+      '  padding: 1.25rem;',
+      '  border: 1px solid #d9e2f5;',
+      '  border-radius: 12px;',
+      '}',
+    ].join('\n'),
+    data: {
+      form: {
+        email: 'user@example.com',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const root = canvasElement as HTMLElement;
+    const form = root.querySelector('form');
+    expect(!!form, 'No se renderizó el formulario.');
+    const submitEvent = new Event('submit', { bubbles: true, cancelable: true });
+    form?.dispatchEvent(submitEvent);
+    expect(true, 'El submit con método faltante no debe romper el render.');
+  },
+};
+
 export const BenchmarkScreen: Story = {
   args: {
     ...meta.args,
@@ -372,13 +407,13 @@ export const RenderTableWithActions: Story = {
     if (reprocessButtons.length === 0) {
       throw new Error('No se encontró el botón Reprocess.');
     }
-    reprocessButtons[0].click();
+    reprocessButtons[0]?.click();
 
     const actionButtons = findButtons('Equivalencias');
     if (actionButtons.length === 0) {
       throw new Error('No se encontró el botón Equivalencias.');
     }
-    actionButtons[0].click();
+    actionButtons[0]?.click();
   },
 };
 

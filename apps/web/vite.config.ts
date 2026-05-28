@@ -7,11 +7,7 @@ import vueDevTools from 'vite-plugin-vue-devtools'
 // https://vite.dev/config/
 export default defineConfig(() => {
   const isStorybook = process.env.STORYBOOK === 'true' || process.env.npm_lifecycle_event === 'storybook'
-  const plugins = [vue()]
-
-  if (!isStorybook) {
-    plugins.push(vueDevTools())
-  }
+  const plugins = [vue(), !isStorybook ? vueDevTools() : null]
 
   return {
     plugins,

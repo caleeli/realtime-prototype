@@ -1,4 +1,4 @@
-import type { ComponentInventoryItem } from '../../../packages/component-registry/src/types';
+import type { ComponentInventoryItem } from '../../../../packages/component-registry/src/types';
 
 import { ComponentCatalogClient } from './componentRegistryApi';
 
@@ -153,6 +153,17 @@ export interface UXImprovementResult {
     readonly data: unknown;
     readonly messages: GenerationMessage[];
   };
+}
+
+export interface UXImprovementError {
+  readonly selector: string;
+  readonly error: string;
+}
+
+export interface UXImprovementResponse {
+  readonly results: UXImprovementResult[];
+  readonly errors: UXImprovementError[];
+  readonly partial: boolean;
 }
 
 export class GenerationServiceError extends Error {
@@ -608,7 +619,7 @@ function addLooseAttributeAsChild(line: ParsedLine, token: string, children: Pug
   }
 
   const interpolation = trimmed.match(/^#\{(.+)\}$/);
-  if (interpolation) {
+  if (interpolation?.[1]) {
     children.push({
       type: 'expression',
       line: line.line,
@@ -843,11 +854,11 @@ function parsePugToHierarchy(pug: string): PugTemplateTree {
       continue;
     }
 
-    while (stack.length > 1 && parsed.indent <= stack[stack.length - 1].indent) {
+    while (stack.length > 1 && parsed.indent <= (stack[stack.length - 1]?.indent ?? -1)) {
       stack.pop();
     }
 
-    stack[stack.length - 1].children.push(parsed.node);
+    stack[stack.length - 1]!.children.push(parsed.node);
     if (parsed.type === 'element') {
       stack.push({
         indent: parsed.indent,
@@ -995,7 +1006,7 @@ function normalizeUxEvaluationText(raw: string): UXEvaluatorResultLine[] {
     .map((line) => line.replace(/^\s*(?:\d+[.)]|\*|[-•])\s*/u, '').trim())
     .filter((line) => line.length > 0);
 
-  if (lines.length === 1 && /^No issues identified\.?$/i.test(lines[0])) {
+  if (lines.length === 1 && /^No issues identified\.?$/i.test(lines[0] ?? '')) {
     return [];
   }
 
@@ -1286,7 +1297,7 @@ export class GenerationPipelineService {
     return normalizeUxEvaluationText(text);
   }
 
-  private async fetchUXImprovements(input: UXImprovementRequest): Promise<UXImprovementResult[]> {
+  private async fetchUXImprovements(input: UXImprovementRequest): Promise<UXImprovementResponse> {
     const response = await this.fetchWithTimeout(
       this.uxImprovementsEndpoint,
       {
@@ -1304,10 +1315,11 @@ export class GenerationPipelineService {
     }
 
     const parsed = safeParseJSON(body);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed
+    const parseResults = (value: unknown): UXImprovementResult[] => {
+      if (!Array.isArray(value)) {
+        return [];
+      }
+      return value
       .map((item): UXImprovementResult | null => {
         if (!item || typeof item !== 'object') {
           return null;
@@ -1327,6 +1339,41 @@ export class GenerationPipelineService {
         };
       })
       .filter((entry): entry is UXImprovementResult => entry !== null);
+    };
+
+    const parseErrors = (value: unknown): UXImprovementError[] => {
+      if (!Array.isArray(value)) {
+        return [];
+      }
+      return value
+        .map((item): UXImprovementError | null => {
+          if (!item || typeof item !== 'object') {
+            return null;
+          }
+          const candidate = item as Record<string, unknown>;
+          const selector = typeof candidate.selector === 'string' ? candidate.selector.trim() : '';
+          const error = typeof candidate.error === 'string' ? candidate.error.trim() : '';
+          if (!selector || !error) {
+            return null;
+          }
+          return { selector, error };
+        })
+        .filter((entry): entry is UXImprovementError => entry !== null);
+    };
+
+    if (Array.isArray(parsed)) {
+      return { results: parseResults(parsed), errors: [], partial: false };
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      return { results: [], errors: [], partial: false };
+    }
+
+    const payload = parsed as Record<string, unknown>;
+    return {
+      results: parseResults(payload.results),
+      errors: parseErrors(payload.errors),
+      partial: payload.partial === true,
+    };
   }
 
   async generate(input: GenerationRequest, catalog?: ComponentInventoryItem[]): Promise<GenerationPipelineResult> {
@@ -1395,7 +1442,7 @@ export class GenerationPipelineService {
     return this.fetchUXEvaluation(input);
   }
 
-  async generateUXImprovements(input: UXImprovementRequest): Promise<UXImprovementResult[]> {
+  async generateUXImprovements(input: UXImprovementRequest): Promise<UXImprovementResponse> {
     return this.fetchUXImprovements(input);
   }
 }

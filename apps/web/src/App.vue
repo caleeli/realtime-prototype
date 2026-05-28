@@ -19,6 +19,7 @@ import '@vue-flow/core/dist/style.css';
 import {
   GenerationPipelineService,
   type UXEvaluatorResultLine,
+  type UXImprovementError,
   type UXImprovementResult,
   type GenerationMessage,
   type InspirationRequest,
@@ -90,7 +91,7 @@ const SafeDynamicPreview = defineComponent({
   },
 });
 
-function createFallbackComponent(tag: string): GenerationRenderOptions['componentLoaders'][string] {
+function createFallbackComponent(tag: string): NonNullable<GenerationRenderOptions['componentLoaders']>[string] {
   return () =>
     Promise.resolve(
       defineComponent({
@@ -158,6 +159,14 @@ interface SelectorImprovementBubble {
   cleanupStyles: () => void;
   top: number;
   left: number;
+}
+
+interface SelectorImprovementGroup {
+  id: string;
+  selector: string;
+  top: number;
+  left: number;
+  bubbles: SelectorImprovementBubble[];
 }
 
 interface DataGenerationHistoryEntry {
@@ -266,6 +275,8 @@ const popupState = ref<PopupRuntimeState>({
 });
 const uxEvaluations: Ref<UXEvaluatorResultLine[]> = ref([]);
 const selectorImprovementBubbles = ref<SelectorImprovementBubble[]>([]);
+const selectorImprovementGroups = ref<SelectorImprovementGroup[]>([]);
+const selectorImprovementGroupCursor = ref<Record<string, number>>({});
 const isGeneratingSelectorImprovements = ref(false);
 const hoveredSelectorImprovementId = ref<string | null>(null);
 const screens = ref<SessionScreenSummary[]>([]);
@@ -615,7 +626,7 @@ function getFlowStartTask(allTasks: FlowTask[] = flowTasks.value): FlowTask | nu
   }
 
   const explicitStart = allTasks.find((task) => task.isStartTask === true);
-  return explicitStart ?? allTasks[0];
+  return explicitStart ?? allTasks[0] ?? null;
 }
 
 function normalizeFlowTaskStartFlags(allTasks: FlowTask[]): FlowTask[] {
@@ -623,7 +634,7 @@ function normalizeFlowTaskStartFlags(allTasks: FlowTask[]): FlowTask[] {
     return [];
   }
 
-  const startTaskId = allTasks.find((task) => task.isStartTask === true)?.id || allTasks[0].id;
+  const startTaskId = allTasks.find((task) => task.isStartTask === true)?.id || allTasks[0]?.id || '';
   return allTasks.map((task) => ({
     ...task,
     isStartTask: task.id === startTaskId,
@@ -1006,7 +1017,7 @@ function syncFlowTasksToScreens(screenList: SessionScreenSummary[] = screens.val
     if (activeTaskIndex < 0 && flowTasks.value.length > 0) {
       const nextTasks = [...flowTasks.value];
       nextTasks[0] = {
-        ...nextTasks[0],
+        ...nextTasks[0]!,
         screenId: activeScreenId.value,
       };
       flowTasks.value = nextTasks;
@@ -2405,9 +2416,9 @@ function getFallbackScreenIdForDeletion(removedScreenId: string): string | null 
     return null;
   }
   if (removedIndex + 1 < ordered.length) {
-    return ordered[removedIndex + 1].id;
+    return ordered[removedIndex + 1]?.id ?? null;
   }
-  return ordered[removedIndex - 1].id;
+  return ordered[removedIndex - 1]?.id ?? null;
 }
 
 async function hydrateFromSessionState(state: SessionScreenState | null) {
@@ -3186,8 +3197,8 @@ function parseUxRecommendation(observation: string) {
     return null;
   }
 
-  const severity = match[1].toLowerCase() as UXRecommendationSeverity;
-  const payload = match[2].trim();
+  const severity = (match[1] ?? '').toLowerCase() as UXRecommendationSeverity;
+  const payload = (match[2] ?? '').trim();
   if (!payload) {
     return null;
   }
@@ -3250,6 +3261,15 @@ const hoveredSelectorImprovement = computed<SelectorImprovementBubble | null>(()
   return selectorImprovementBubbles.value.find((entry) => entry.id === hoveredId) ?? null;
 });
 
+function getSelectorImprovementActiveBubble(group: SelectorImprovementGroup): SelectorImprovementBubble | null {
+  if (group.bubbles.length === 0) {
+    return null;
+  }
+  const cursor = selectorImprovementGroupCursor.value[group.id] ?? 0;
+  const index = cursor >= 0 ? cursor % group.bubbles.length : 0;
+  return group.bubbles[index] ?? group.bubbles[0] ?? null;
+}
+
 const statusBarValidation = computed(() => {
   if (uxEvaluationStatus.value === 'loading') {
     return 'Evaluando interfaz…';
@@ -3300,6 +3320,8 @@ function buildUserPayloadMessages(history: ChatMessage[]): GenerationMessage[] {
 
 function clearSelectorImprovementBubbles() {
   hoveredSelectorImprovementId.value = null;
+  selectorImprovementGroupCursor.value = {};
+  selectorImprovementGroups.value = [];
   for (const entry of selectorImprovementBubbles.value) {
     entry.cleanupStyles();
   }
@@ -3309,10 +3331,53 @@ function clearSelectorImprovementBubbles() {
 function recalculateSelectorImprovementPositions() {
   const container = canvasContentRef.value;
   if (!container) {
+    selectorImprovementGroups.value = [];
     return;
   }
   const containerRect = container.getBoundingClientRect();
   const updated: SelectorImprovementBubble[] = [];
+  const groupedByAnchor = new Map<string, SelectorImprovementGroup>();
+
+  const markerSize = 30;
+  const markerGap = 8;
+  const containerWidth = Math.max(markerSize + 10, container.clientWidth || containerRect.width || markerSize + 10);
+  const containerHeight = Math.max(markerSize + 10, container.clientHeight || containerRect.height || markerSize + 10);
+
+  const placedGroups: Array<{ top: number; left: number }> = [];
+  const intersects = (aTop: number, aLeft: number, bTop: number, bLeft: number): boolean => {
+    return (
+      Math.abs(aTop - bTop) < markerSize + markerGap &&
+      Math.abs(aLeft - bLeft) < markerSize + markerGap
+    );
+  };
+
+  const placeWithoutCollision = (baseTop: number, baseLeft: number): { top: number; left: number } => {
+    let top = Math.max(0, baseTop);
+    let left = Math.max(0, baseLeft);
+    let attempts = 0;
+    while (
+      placedGroups.some((placed) => intersects(top, left, placed.top, placed.left)) &&
+      attempts < 60
+    ) {
+      top += markerSize + markerGap;
+      if (top + markerSize > containerHeight) {
+        top = Math.max(0, baseTop);
+        left += markerSize + markerGap;
+      }
+      if (left + markerSize > containerWidth) {
+        left = Math.max(0, baseLeft - (Math.floor(attempts / 4) + 1) * (markerSize + markerGap));
+        if (left < 0) {
+          left = 0;
+        }
+      }
+      attempts += 1;
+    }
+    const clampedTop = Math.min(Math.max(0, top), Math.max(0, containerHeight - markerSize));
+    const clampedLeft = Math.min(Math.max(0, left), Math.max(0, containerWidth - markerSize));
+    placedGroups.push({ top: clampedTop, left: clampedLeft });
+    return { top: clampedTop, left: clampedLeft };
+  };
+
   for (const entry of selectorImprovementBubbles.value) {
     const element = container.querySelector(entry.selector);
     if (!element) {
@@ -3322,8 +3387,63 @@ function recalculateSelectorImprovementPositions() {
     entry.top = Math.max(0, targetRect.top - containerRect.top);
     entry.left = Math.max(0, targetRect.left - containerRect.left);
     updated.push(entry);
+
+    const rowBin = Math.round(entry.top / 24);
+    const colBin = Math.round(entry.left / 24);
+    const groupKey = `${entry.selector}::${rowBin}:${colBin}`;
+    const existingGroup = groupedByAnchor.get(groupKey);
+    if (existingGroup) {
+      existingGroup.bubbles.push(entry);
+      continue;
+    }
+    groupedByAnchor.set(groupKey, {
+      id: groupKey,
+      selector: entry.selector,
+      top: entry.top,
+      left: entry.left,
+      bubbles: [entry],
+    });
   }
+
+  const resolvedGroups = Array.from(groupedByAnchor.values())
+    .sort((a, b) => a.top - b.top || a.left - b.left)
+    .map((group) => {
+      const placed = placeWithoutCollision(group.top, group.left);
+      return {
+        ...group,
+        top: placed.top,
+        left: placed.left,
+      };
+    });
+
   selectorImprovementBubbles.value = updated;
+  selectorImprovementGroups.value = resolvedGroups;
+}
+
+function onSelectorImprovementGroupClick(group: SelectorImprovementGroup) {
+  if (group.bubbles.length === 0) {
+    return;
+  }
+  if (group.bubbles.length === 1) {
+    void applySelectorImprovement(group.bubbles[0]!);
+    return;
+  }
+  const current = selectorImprovementGroupCursor.value[group.id] ?? 0;
+  const next = (current + 1) % group.bubbles.length;
+  selectorImprovementGroupCursor.value = {
+    ...selectorImprovementGroupCursor.value,
+    [group.id]: next,
+  };
+  const active = group.bubbles[next] ?? group.bubbles[0];
+  hoveredSelectorImprovementId.value = active?.id ?? null;
+}
+
+function getSelectorImprovementGroupTooltip(group: SelectorImprovementGroup): string {
+  const active = getSelectorImprovementActiveBubble(group);
+  if (!active) {
+    return `${group.selector} (${group.bubbles.length} mejora(s))`;
+  }
+  return `${group.selector}: ${active.improvement}`;
 }
 
 function onWindowResize() {
@@ -3338,15 +3458,20 @@ async function generateSelectorImprovements(
   isGeneratingSelectorImprovements.value = true;
 
   try {
-    const ideas = await pipelineService.generateUXImprovements({
+    const improvementResponse = await pipelineService.generateUXImprovements({
       prompt,
       context: buildGenerationContextForAI(),
       pug: pipelineOutput.sourcePug,
       css: pipelineOutput.css,
       data: cloneDataValue(pipelineOutput.data),
     });
+    const ideas = improvementResponse.results;
+    const errors: UXImprovementError[] = improvementResponse.errors;
 
     if (ideas.length === 0) {
+      if (errors.length > 0) {
+        message.value = `No se pudieron generar mejoras UX (${errors.length} selector(es) con error).`;
+      }
       return;
     }
 
@@ -3379,6 +3504,9 @@ async function generateSelectorImprovements(
       .filter((entry): entry is PromiseFulfilledResult<SelectorImprovementBubble> => entry.status === 'fulfilled')
       .map((entry) => entry.value);
     selectorImprovementBubbles.value = built;
+    if (errors.length > 0 || improvementResponse.partial) {
+      message.value = `Se generaron ${built.length} mejora(s) UX con ${errors.length} error(es) parcial(es).`;
+    }
     await nextTick();
     recalculateSelectorImprovementPositions();
   } catch (_error) {
@@ -3548,7 +3676,7 @@ async function onGenerateUxImprovementsManual() {
     return;
   }
 
-  const promptForImprovements = lastUserMessage.value?.content?.trim() || promptText.value.trim() || 'Improve current screen';
+  const promptForImprovements = lastUserMessage.value.trim() || promptText.value.trim() || 'Improve current screen';
   message.value = 'Solicitando mejoras UX manualmente...';
   await generateSelectorImprovements(promptForImprovements, output);
   if (selectorImprovementBubbles.value.length > 0) {
@@ -4365,7 +4493,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             </div>
           </div>
         </div>
-        <div v-if="actionableUxRecommendations.length > 0 || isGenerating" class="ux-recommendation-bubbles">
+        <div v-if="actionableUxRecommendations.length > 0 || selectorImprovementGroups.length > 0 || isGenerating" class="ux-recommendation-bubbles">
           <TransitionGroup
             name="ux-bubble"
             tag="div"
@@ -4392,6 +4520,21 @@ function onPromptKeydown(event: KeyboardEvent) {
                 {{ suggestion.severity === 'high' ? 'H' : suggestion.severity === 'medium' ? 'M' : 'L' }}
               </span>
               <span class="ux-recommendation-text-visually-hidden">{{ suggestion.text }}</span>
+            </b-button>
+            <b-button
+              v-for="(group, chipIndex) in selectorImprovementGroups"
+              :key="`chip-${group.id}`"
+              type="button"
+              class="ux-recommendation-bubble ux-recommendation-bubble--selector"
+              variant="primary"
+              v-b-tooltip="{ title: getSelectorImprovementGroupTooltip(group) }"
+              :aria-label="getSelectorImprovementGroupTooltip(group)"
+              @mouseenter="hoveredSelectorImprovementId = getSelectorImprovementActiveBubble(group)?.id ?? null"
+              @mouseleave="hoveredSelectorImprovementId = null"
+              @click="onSelectorImprovementGroupClick(group)"
+            >
+              <span class="ux-recommendation-bubble-letter">{{ chipIndex + 1 }}</span>
+              <span class="ux-recommendation-text-visually-hidden">{{ getSelectorImprovementGroupTooltip(group) }}</span>
             </b-button>
           </TransitionGroup>
         </div>
@@ -4619,21 +4762,21 @@ function onPromptKeydown(event: KeyboardEvent) {
         <Transition :name="themeTransitionDirection === 'left' ? 'canvas-swipe-left' : 'canvas-swipe-right'" mode="out-in">
           <div v-if="generatedComponent" :key="themeTransitionKey" ref="canvasContentRef" class="canvas-content">
             <component :is="generatedComponent" />
-            <div v-if="selectorImprovementBubbles.length > 0" class="selector-improvement-overlay">
+            <div v-if="selectorImprovementGroups.length > 0" class="selector-improvement-overlay">
               <button
-                v-for="(bubble, index) in selectorImprovementBubbles"
-                :key="bubble.id"
+                v-for="(group, index) in selectorImprovementGroups"
+                :key="group.id"
                 type="button"
                 class="selector-improvement-bubble"
-                :style="{ top: `${bubble.top}px`, left: `${bubble.left}px` }"
-                :title="bubble.improvement"
-                @mouseenter="hoveredSelectorImprovementId = bubble.id"
+                :style="{ top: `${group.top}px`, left: `${group.left}px` }"
+                :title="`${group.selector} (${group.bubbles.length} mejora(s))`"
+                @mouseenter="hoveredSelectorImprovementId = getSelectorImprovementActiveBubble(group)?.id ?? null"
                 @mouseleave="hoveredSelectorImprovementId = null"
-                @focus="hoveredSelectorImprovementId = bubble.id"
+                @focus="hoveredSelectorImprovementId = getSelectorImprovementActiveBubble(group)?.id ?? null"
                 @blur="hoveredSelectorImprovementId = null"
-                @click="applySelectorImprovement(bubble)"
+                @click="onSelectorImprovementGroupClick(group)"
               >
-                {{ index + 1 }}
+                {{ index + 1 }}<span v-if="group.bubbles.length > 1" class="selector-improvement-bubble-count">+{{ group.bubbles.length - 1 }}</span>
               </button>
             </div>
           </div>
@@ -6692,11 +6835,20 @@ function onPromptKeydown(event: KeyboardEvent) {
   font-weight: 700;
   cursor: pointer;
   box-shadow: var(--rp-shadow-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem;
 }
 
 .selector-improvement-bubble:hover,
 .selector-improvement-bubble:focus-visible {
   transform: translate(-50%, -50%) scale(1.08);
+}
+
+.selector-improvement-bubble-count {
+  font-size: 0.55rem;
+  font-weight: 700;
 }
 
 .selector-improvement-preview {
@@ -7075,7 +7227,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 
 .ux-recommendation-bubbles {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
   overflow-x: auto;
@@ -7083,6 +7235,19 @@ function onPromptKeydown(event: KeyboardEvent) {
   white-space: nowrap;
   scrollbar-width: none;
   padding: 0.24rem 0 0;
+}
+
+.ux-recommendation-bubble-list {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.ux-recommendation-bubble--selector {
+  border-color: rgba(var(--bs-primary-rgb), 0.72);
+  background: color-mix(in srgb, rgba(var(--bs-primary-rgb), 0.9) 48%, var(--rp-bg-panel));
+  color: #ffffff;
 }
 
 .ux-bubble-enter-active,

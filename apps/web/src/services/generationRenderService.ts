@@ -19,7 +19,7 @@ import type {
   PugTreeExpressionNode,
 } from './generationPipelineService';
 
-export type ComponentLoader = () => Promise<DefineComponent | { default: DefineComponent }>;
+export type ComponentLoader = () => Promise<unknown>;
 
 export interface GenerationRenderOptions {
   app?: App;
@@ -182,7 +182,7 @@ const BOOTSTRAP_PREFIXLESS_COMPONENT_TAGS = (() => {
   return map;
 })();
 
-function hasProperty<T extends Record<string, unknown>>(value: T, key: string): key is keyof T {
+function hasProperty<T extends Record<string, unknown>>(value: T, key: string): key is Extract<keyof T, string> {
   return key in value;
 }
 
@@ -345,6 +345,8 @@ interface VForDescriptor {
   sourceExpression: string;
 }
 
+const NOOP_FUNCTION = () => undefined;
+
 function parseVForExpression(expression: string): VForDescriptor | null {
   const normalized = expression.trim();
   if (!normalized) {
@@ -451,6 +453,9 @@ function resolveExpression(expression: string, context: PipelineScreenData): unk
   const functionMatch = numericOrBoolean.match(/^\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(([\s\S]*)\)\s*$/);
   if (functionMatch) {
     const fnName = functionMatch[1];
+    if (!fnName) {
+      return undefined;
+    }
     const rawArgs = functionMatch[2] ?? '';
     const maybeFunction = getPathValue(context, fnName);
     if (typeof maybeFunction === 'function') {
@@ -566,6 +571,128 @@ function parseFunctionCallArgs(rawArgs: string): string[] {
   return args;
 }
 
+function extractCallableExpressionTarget(expression: string): string | null {
+  const trimmed = expression.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const callMatch = trimmed.match(/^\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(/);
+  if (callMatch?.[1]) {
+    return callMatch[1];
+  }
+
+  const referenceMatch = trimmed.match(/^\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*$/);
+  if (referenceMatch?.[1]) {
+    return referenceMatch[1];
+  }
+
+  return null;
+}
+
+function collectReferencedCallablePaths(
+  nodes: PugTemplateNode[],
+  out: Set<string>,
+): void {
+  for (const node of nodes) {
+    if (isInterpolationNode(node)) {
+      const target = extractCallableExpressionTarget(node.expression);
+      if (target) {
+        out.add(target);
+      }
+      continue;
+    }
+
+    if (!isElementNode(node)) {
+      continue;
+    }
+
+    for (const [key, rawValue] of Object.entries(node.attributes)) {
+      if (typeof rawValue !== 'string') {
+        continue;
+      }
+
+      const isEventBinding = key.startsWith('@') || key.startsWith('v-on:');
+      const isDynamicBinding = key.startsWith(':') || key.startsWith('v-bind:');
+      if (!isEventBinding && !isDynamicBinding) {
+        continue;
+      }
+
+      const target = extractCallableExpressionTarget(rawValue);
+      if (target) {
+        out.add(target);
+      }
+    }
+
+    if (node.children.length > 0) {
+      collectReferencedCallablePaths(node.children, out);
+    }
+  }
+}
+
+function ensureCallablePath(
+  context: PipelineScreenData,
+  path: string,
+): boolean {
+  const trimmed = path.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const existing = getPathValue(context, trimmed);
+  if (typeof existing === 'function') {
+    return false;
+  }
+  if (existing !== undefined) {
+    return false;
+  }
+
+  const segments = trimmed.split('.').filter(Boolean);
+  if (segments.length === 0) {
+    return false;
+  }
+
+  let cursor: Record<string, unknown> = context;
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const segment = segments[index]!;
+    const current = cursor[segment];
+    if (current === undefined) {
+      const next: Record<string, unknown> = {};
+      cursor[segment] = next;
+      cursor = next;
+      continue;
+    }
+    if (current === null || typeof current !== 'object' || Array.isArray(current)) {
+      return false;
+    }
+    cursor = current as Record<string, unknown>;
+  }
+
+  const leaf = segments[segments.length - 1]!;
+  if (cursor[leaf] === undefined) {
+    cursor[leaf] = NOOP_FUNCTION;
+    return true;
+  }
+  return false;
+}
+
+function populateMissingCallableNoops(
+  tree: GenerationPipelineResult['template'],
+  context: PipelineScreenData,
+): string[] {
+  const callablePaths = new Set<string>();
+  collectReferencedCallablePaths(tree.children, callablePaths);
+  const injected: string[] = [];
+
+  for (const path of callablePaths) {
+    if (ensureCallablePath(context, path)) {
+      injected.push(path);
+    }
+  }
+
+  return injected;
+}
+
 function interpolateText(text: string, context: PipelineScreenData): string {
   return text.replace(/{{\s*([^}]+)\s*}}/g, (_, variable) => {
     const value = resolveExpression(String(variable), context);
@@ -577,7 +704,7 @@ function interpolateText(text: string, context: PipelineScreenData): string {
 }
 
 function toOnEventName(rawEvent: string): string {
-  const eventName = rawEvent.split('.')[0].trim();
+  const eventName = (rawEvent.split('.')[0] ?? '').trim();
   if (!eventName) {
     return '';
   }
@@ -876,7 +1003,7 @@ function evaluateArrayToVNodes(values: unknown[], context: PipelineScreenData): 
     .filter((entry): entry is VNode => entry !== null);
 
   if (nodes.length === 1) {
-    return nodes[0];
+    return nodes[0]!;
   }
   return nodes;
 }
@@ -906,7 +1033,7 @@ function collectChildren(
     return '';
   }
   if (renderedChildren.length === 1) {
-    return renderedChildren[0];
+    return renderedChildren[0]!;
   }
 
   return renderedChildren;
@@ -1121,6 +1248,10 @@ export class GenerationRenderService {
 
     const registry = await this.buildComponentRegistry(output.imports);
     const context = { ...(output.data ?? {}), ...(this.runtimeContext ?? {}) } as PipelineScreenData;
+    const injectedNoops = populateMissingCallableNoops(output.template, context);
+    if (import.meta.env.DEV && injectedNoops.length > 0) {
+      console.warn('[GeneratedScreen][missing-method-fallback]', injectedNoops);
+    }
     const bootstrapRegistry = buildBootstrapComponentRegistry(output.metadata.usedTags);
     if (import.meta.env.DEV) {
       console.debug('[GeneratedScreen][bootstrap-registry]', Object.keys(bootstrapRegistry));
@@ -1195,7 +1326,7 @@ export class GenerationRenderService {
       unresolvedTags: Array.from(new Set([...output.metadata.unresolvedTags, ...registry.unresolved])),
       missingComponents: output.imports.filter((entry) => !entry.isCatalogResolved || !registry.localComponents[entry.tag]).map((entry) => entry.tag),
       styleId: this.styleId,
-      installStyles: () => undefined,
+      installStyles: () => () => undefined,
     };
   }
 }

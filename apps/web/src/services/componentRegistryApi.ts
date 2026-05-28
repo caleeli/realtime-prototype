@@ -2,7 +2,7 @@ import type {
   CatalogVersion,
   ComponentInventoryItem,
   ComponentInventoryResponse,
-} from '../../../packages/component-registry/src/types';
+} from '../../../../packages/component-registry/src/types';
 
 export interface ComponentCatalogClientOptions {
   baseUrl?: string;

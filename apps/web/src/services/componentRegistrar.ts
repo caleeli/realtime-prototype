@@ -1,7 +1,7 @@
 import type { App, DefineComponent } from 'vue';
-import type { ComponentInventoryItem } from '../../../packages/component-registry/src/types';
+import type { ComponentInventoryItem } from '../../../../packages/component-registry/src/types';
 
-export type ComponentLoader = () => Promise<DefineComponent | { default: DefineComponent }>;
+export type ComponentLoader = () => Promise<unknown>;
 
 export type ComponentLoaderRegistry = Record<string, ComponentLoader>;
 

@@ -82,7 +82,7 @@ export default defineComponent({
     return () =>
       dataPayload.value.datasets && (dataPayload.value.datasets as Array<unknown>).length === 0
         ? h('div', { class: 'vue-chart-empty', 'aria-live': 'polite' }, 'No hay datos para el gráfico')
-        : h(Renderer.value, {
+        : h(Renderer.value as any, {
             data: dataPayload.value,
             options: optionsPayload.value,
             width: props.width,

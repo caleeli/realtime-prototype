@@ -1311,6 +1311,17 @@ type uxImprovementResult struct {
 	Screen      generationResponse `json:"screen"`
 }
 
+type uxImprovementError struct {
+	Selector string `json:"selector"`
+	Error    string `json:"error"`
+}
+
+type uxImprovementResponse struct {
+	Results []uxImprovementResult `json:"results"`
+	Errors  []uxImprovementError  `json:"errors"`
+	Partial bool                  `json:"partial"`
+}
+
 type cerebrasChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -2995,10 +3006,10 @@ func filterUXRecommendations(recommendations []string) []string {
 	return filtered
 }
 
-func callCerebrasUXImprovements(ctx context.Context, input uxImprovementRequest) ([]uxImprovementResult, error) {
+func callCerebrasUXImprovements(ctx context.Context, input uxImprovementRequest) (uxImprovementResponse, error) {
 	apiKey := strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY"))
 	if apiKey == "" {
-		return nil, errMissingCerebrasKey
+		return uxImprovementResponse{}, errMissingCerebrasKey
 	}
 
 	endpoint := strings.TrimSpace(os.Getenv("CEREBRAS_API_URL"))
@@ -3037,7 +3048,7 @@ func callCerebrasUXImprovements(ctx context.Context, input uxImprovementRequest)
 	)
 	systemPrompt, templatePrompt, err := splitPromptFile(fullPrompt)
 	if err != nil {
-		return nil, err
+		return uxImprovementResponse{}, err
 	}
 	userPrompt := strings.ReplaceAll(templatePrompt, "{{maxResults}}", strconv.Itoa(maxResults))
 	userPrompt = strings.ReplaceAll(userPrompt, "{{prompt}}", strings.TrimSpace(input.Prompt))
@@ -3060,22 +3071,26 @@ func callCerebrasUXImprovements(ctx context.Context, input uxImprovementRequest)
 		nil,
 	)
 	if err != nil {
-		return nil, err
+		return uxImprovementResponse{}, err
 	}
 
 	jsonCandidate, err := extractJSONFromText(ideasRaw)
 	if err != nil {
-		return nil, fmt.Errorf("ux improvement ideas are not valid JSON: %w", err)
+		return uxImprovementResponse{}, fmt.Errorf("ux improvement ideas are not valid JSON: %w", err)
 	}
 
 	var parsed struct {
 		Ideas []uxImprovementIdea `json:"ideas"`
 	}
 	if err := json.Unmarshal([]byte(jsonCandidate), &parsed); err != nil {
-		return nil, fmt.Errorf("failed to parse ux improvement ideas: %w", err)
+		return uxImprovementResponse{}, fmt.Errorf("failed to parse ux improvement ideas: %w", err)
 	}
 	if len(parsed.Ideas) == 0 {
-		return []uxImprovementResult{}, nil
+		return uxImprovementResponse{
+			Results: []uxImprovementResult{},
+			Errors:  []uxImprovementError{},
+			Partial: false,
+		}, nil
 	}
 
 	ideas := make([]uxImprovementIdea, 0, maxResults)
@@ -3101,45 +3116,111 @@ func callCerebrasUXImprovements(ctx context.Context, input uxImprovementRequest)
 	}
 
 	results := make([]uxImprovementResult, len(ideas))
+	succeeded := make([]bool, len(ideas))
+	errorsBySelector := make([]uxImprovementError, 0, len(ideas))
+	var resultsMu sync.Mutex
 	var wg sync.WaitGroup
-	errCh := make(chan error, len(ideas))
 
 	for i, idea := range ideas {
 		wg.Add(1)
 		go func(index int, currentIdea uxImprovementIdea) {
 			defer wg.Done()
-			generated, generationErr := callCerebrasGeneration(ctx, generationRequest{
-				Prompt: fmt.Sprintf(
-					"Apply ONLY this UX improvement to the current screen while preserving the overall structure and existing data semantics.\nTarget selector: %s\nImprovement: %s",
-					currentIdea.Selector,
-					currentIdea.Improvement,
-				),
-				Context:     input.Context,
-				CurrentPug:  input.Pug,
-				CurrentCss:  input.Css,
-				CurrentData: input.Data,
-			})
+			const maxSelectorAttempts = 2
+			var generated generationResponse
+			var generationErr error
+			for attempt := 1; attempt <= maxSelectorAttempts; attempt++ {
+				generated, generationErr = callCerebrasGeneration(ctx, generationRequest{
+					Prompt: fmt.Sprintf(
+						"Apply ONLY this UX improvement to the current screen while preserving the overall structure and existing data semantics.\nTarget selector: %s\nImprovement: %s",
+						currentIdea.Selector,
+						currentIdea.Improvement,
+					),
+					Context:     input.Context,
+					CurrentPug:  input.Pug,
+					CurrentCss:  input.Css,
+					CurrentData: input.Data,
+				})
+				if generationErr == nil {
+					break
+				}
+				if attempt >= maxSelectorAttempts || !isTransientUXImprovementError(generationErr) {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					generationErr = ctx.Err()
+					break
+				case <-time.After(time.Duration(attempt) * 250 * time.Millisecond):
+				}
+			}
 			if generationErr != nil {
-				errCh <- fmt.Errorf("failed to generate improvement for selector %q: %w", currentIdea.Selector, generationErr)
+				resultsMu.Lock()
+				errorsBySelector = append(errorsBySelector, uxImprovementError{
+					Selector: currentIdea.Selector,
+					Error:    generationErr.Error(),
+				})
+				resultsMu.Unlock()
 				return
 			}
+			resultsMu.Lock()
 			results[index] = uxImprovementResult{
 				Selector:    currentIdea.Selector,
 				Improvement: currentIdea.Improvement,
 				Screen:      generated,
 			}
+			succeeded[index] = true
+			resultsMu.Unlock()
 		}(i, idea)
 	}
 	wg.Wait()
-	close(errCh)
 
-	for generationErr := range errCh {
-		if generationErr != nil {
-			return nil, generationErr
+	finalResults := make([]uxImprovementResult, 0, len(results))
+	for i, ok := range succeeded {
+		if ok {
+			finalResults = append(finalResults, results[i])
 		}
 	}
+	if len(finalResults) == 0 && len(errorsBySelector) > 0 {
+		first := errorsBySelector[0]
+		return uxImprovementResponse{}, fmt.Errorf("failed to generate improvement for selector %q: %s", first.Selector, first.Error)
+	}
 
-	return results, nil
+	return uxImprovementResponse{
+		Results: finalResults,
+		Errors:  errorsBySelector,
+		Partial: len(finalResults) > 0 && len(errorsBySelector) > 0,
+	}, nil
+}
+
+func isTransientUXImprovementError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	lowered := strings.ToLower(err.Error())
+	transientMarkers := []string{
+		"timeout",
+		"tempor",
+		"rate limit",
+		"too many requests",
+		"429",
+		"bad gateway",
+		"502",
+		"service unavailable",
+		"503",
+		"gateway timeout",
+		"504",
+		"connection reset",
+		"connection refused",
+	}
+	for _, marker := range transientMarkers {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultUxImprovementsPromptTemplate() string {
