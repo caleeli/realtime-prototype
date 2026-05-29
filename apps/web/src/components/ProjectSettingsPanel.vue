@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue';
+import { ref, watch } from 'vue';
 import { BButton, BFormTextarea, BFormGroup } from 'bootstrap-vue-next';
+import { useI18n } from 'vue-i18n';
 import type { ProjectSettings } from '../services/projectSessionService';
 
 interface Props {
@@ -29,38 +30,7 @@ const localSettings = ref({
   generationContext: '',
 });
 
-const fieldLabels: Record<string, string> = {
-  designStyle: 'Estilo de diseño',
-  colorPalette: 'Paleta de colores',
-  brandGuidelines: 'Guías de marca',
-  componentExamples: 'Ejemplos de componentes',
-  technicalConstraints: 'Restricciones técnicas',
-  layoutPreferences: 'Preferencias de layout',
-  imageGenerationNotes: 'Notas para generación de imágenes',
-  generationContext: 'Contexto adicional de generación',
-};
-
-const fieldPlaceholders: Record<string, string> = {
-  designStyle: 'Ej: Minimalista, moderno, corporativo, playful...',
-  colorPalette: 'Ej: Primary: #3B82F6, Secondary: #10B981, Neutral: #6B7280...',
-  brandGuidelines: 'Ej: Tipografía, tono de voz, principios de diseño...',
-  componentExamples: 'Ej: Preferir cards con sombras suaves, botones redondeados...',
-  technicalConstraints: 'Ej: Soporte para IE11, accesibilidad WCAG 2.1 AA...',
-  layoutPreferences: 'Ej: Densidad compacta, espaciado amplio, grid de 12 columnas...',
-  imageGenerationNotes: 'Ej: Estilo ilustrativo, fotográfico, flat design...',
-  generationContext: 'Ej: Contexto específico del proyecto, usuarios target, industria...',
-};
-
-const fieldDescriptions: Record<string, string> = {
-  designStyle: 'Define el estilo visual general que se aplicará a las pantallas generadas.',
-  colorPalette: 'Especifica los colores principales y secundarios del proyecto.',
-  brandGuidelines: 'Describe las guías de marca que deben respetarse en el diseño.',
-  componentExamples: 'Proporciona ejemplos de componentes preferidos o patrones comunes.',
-  technicalConstraints: 'Indica restricciones técnicas o requisitos especiales.',
-  layoutPreferences: 'Define preferencias de espaciado, densidad y estructura.',
-  imageGenerationNotes: 'Guías específicas para la generación de imágenes de inspiración.',
-  generationContext: 'Contexto adicional que se incluirá en todos los prompts de generación.',
-};
+const { t } = useI18n();
 
 watch(
   () => props.settings,
@@ -93,126 +63,126 @@ function getFieldId(field: string): string {
 <template>
   <div class="project-settings-panel">
     <header class="project-settings-header">
-      <h2 class="project-settings-title">Configuración del proyecto</h2>
+      <h2 class="project-settings-title">{{ t('projectSettings.title') }}</h2>
       <p class="project-settings-subtitle">
-        Estas propiedades enriquecen los system prompts para generación de UI, inspiración e imágenes.
+        {{ t('projectSettings.subtitle') }}
       </p>
     </header>
 
     <div v-if="isLoading" class="project-settings-loading">
       <div class="spinner-border spinner-border-sm text-primary" role="status">
-        <span class="visually-hidden">Cargando...</span>
+        <span class="visually-hidden">{{ t('projectSettings.loading') }}</span>
       </div>
-      <span class="loading-text">Cargando configuración...</span>
+      <span class="loading-text">{{ t('projectSettings.loadingConfig') }}</span>
     </div>
 
     <form v-else class="project-settings-form" @submit.prevent="handleSave">
       <div class="project-settings-sections">
         <section class="settings-section">
-          <h3 class="settings-section-title">Diseño visual</h3>
-          <p class="settings-section-desc">Configuraciones que afectan la apariencia de las pantallas generadas.</p>
+          <h3 class="settings-section-title">{{ t('projectSettings.section.visualDesign') }}</h3>
+          <p class="settings-section-desc">{{ t('projectSettings.section.visualDesignDesc') }}</p>
 
           <BFormGroup>
-            <label :for="getFieldId('designStyle')" class="form-label">{{ fieldLabels.designStyle }}</label>
+            <label :for="getFieldId('designStyle')" class="form-label">{{ t('projectSettings.fields.designStyle') }}</label>
             <BFormTextarea
               :id="getFieldId('designStyle')"
               v-model="localSettings.designStyle"
-              :placeholder="fieldPlaceholders.designStyle"
+              :placeholder="t('projectSettings.placeholders.designStyle')"
               rows="2"
             />
-            <small class="form-text text-muted">{{ fieldDescriptions.designStyle }}</small>
+            <small class="form-text text-muted">{{ t('projectSettings.descriptions.designStyle') }}</small>
           </BFormGroup>
 
           <BFormGroup>
-            <label :for="getFieldId('colorPalette')" class="form-label">{{ fieldLabels.colorPalette }}</label>
+            <label :for="getFieldId('colorPalette')" class="form-label">{{ t('projectSettings.fields.colorPalette') }}</label>
             <BFormTextarea
               :id="getFieldId('colorPalette')"
               v-model="localSettings.colorPalette"
-              :placeholder="fieldPlaceholders.colorPalette"
+              :placeholder="t('projectSettings.placeholders.colorPalette')"
               rows="3"
             />
-            <small class="form-text text-muted">{{ fieldDescriptions.colorPalette }}</small>
+            <small class="form-text text-muted">{{ t('projectSettings.descriptions.colorPalette') }}</small>
           </BFormGroup>
 
           <BFormGroup>
-            <label :for="getFieldId('brandGuidelines')" class="form-label">{{ fieldLabels.brandGuidelines }}</label>
+            <label :for="getFieldId('brandGuidelines')" class="form-label">{{ t('projectSettings.fields.brandGuidelines') }}</label>
             <BFormTextarea
               :id="getFieldId('brandGuidelines')"
               v-model="localSettings.brandGuidelines"
-              :placeholder="fieldPlaceholders.brandGuidelines"
+              :placeholder="t('projectSettings.placeholders.brandGuidelines')"
               rows="4"
             />
-            <small class="form-text text-muted">{{ fieldDescriptions.brandGuidelines }}</small>
+            <small class="form-text text-muted">{{ t('projectSettings.descriptions.brandGuidelines') }}</small>
           </BFormGroup>
         </section>
 
         <section class="settings-section">
-          <h3 class="settings-section-title">Componentes y patrones</h3>
-          <p class="settings-section-desc">Preferencias para la selección y estilo de componentes.</p>
+          <h3 class="settings-section-title">{{ t('projectSettings.section.componentsPatterns') }}</h3>
+          <p class="settings-section-desc">{{ t('projectSettings.section.componentsPatternsDesc') }}</p>
 
           <BFormGroup>
-            <label :for="getFieldId('componentExamples')" class="form-label">{{ fieldLabels.componentExamples }}</label>
+            <label :for="getFieldId('componentExamples')" class="form-label">{{ t('projectSettings.fields.componentExamples') }}</label>
             <BFormTextarea
               :id="getFieldId('componentExamples')"
               v-model="localSettings.componentExamples"
-              :placeholder="fieldPlaceholders.componentExamples"
+              :placeholder="t('projectSettings.placeholders.componentExamples')"
               rows="4"
             />
-            <small class="form-text text-muted">{{ fieldDescriptions.componentExamples }}</small>
+            <small class="form-text text-muted">{{ t('projectSettings.descriptions.componentExamples') }}</small>
           </BFormGroup>
 
           <BFormGroup>
-            <label :for="getFieldId('layoutPreferences')" class="form-label">{{ fieldLabels.layoutPreferences }}</label>
+            <label :for="getFieldId('layoutPreferences')" class="form-label">{{ t('projectSettings.fields.layoutPreferences') }}</label>
             <BFormTextarea
               :id="getFieldId('layoutPreferences')"
               v-model="localSettings.layoutPreferences"
-              :placeholder="fieldPlaceholders.layoutPreferences"
+              :placeholder="t('projectSettings.placeholders.layoutPreferences')"
               rows="3"
             />
-            <small class="form-text text-muted">{{ fieldDescriptions.layoutPreferences }}</small>
+            <small class="form-text text-muted">{{ t('projectSettings.descriptions.layoutPreferences') }}</small>
           </BFormGroup>
         </section>
 
         <section class="settings-section">
-          <h3 class="settings-section-title">Restricciones y contexto</h3>
-          <p class="settings-section-desc">Requisitos técnicos y contexto adicional para la generación.</p>
+          <h3 class="settings-section-title">{{ t('projectSettings.section.constraintsContext') }}</h3>
+          <p class="settings-section-desc">{{ t('projectSettings.section.constraintsContextDesc') }}</p>
 
           <BFormGroup>
-            <label :for="getFieldId('technicalConstraints')" class="form-label">{{ fieldLabels.technicalConstraints }}</label>
+            <label :for="getFieldId('technicalConstraints')" class="form-label">{{ t('projectSettings.fields.technicalConstraints') }}</label>
             <BFormTextarea
               :id="getFieldId('technicalConstraints')"
               v-model="localSettings.technicalConstraints"
-              :placeholder="fieldPlaceholders.technicalConstraints"
+              :placeholder="t('projectSettings.placeholders.technicalConstraints')"
               rows="3"
             />
-            <small class="form-text text-muted">{{ fieldDescriptions.technicalConstraints }}</small>
+            <small class="form-text text-muted">{{ t('projectSettings.descriptions.technicalConstraints') }}</small>
           </BFormGroup>
 
           <BFormGroup>
-            <label :for="getFieldId('generationContext')" class="form-label">{{ fieldLabels.generationContext }}</label>
+            <label :for="getFieldId('generationContext')" class="form-label">{{ t('projectSettings.fields.generationContext') }}</label>
             <BFormTextarea
               :id="getFieldId('generationContext')"
               v-model="localSettings.generationContext"
-              :placeholder="fieldPlaceholders.generationContext"
+              :placeholder="t('projectSettings.placeholders.generationContext')"
               rows="4"
             />
-            <small class="form-text text-muted">{{ fieldDescriptions.generationContext }}</small>
+            <small class="form-text text-muted">{{ t('projectSettings.descriptions.generationContext') }}</small>
           </BFormGroup>
         </section>
 
         <section class="settings-section">
-          <h3 class="settings-section-title">Inspiración e imágenes</h3>
-          <p class="settings-section-desc">Configuraciones específicas para la generación de inspiración visual.</p>
+          <h3 class="settings-section-title">{{ t('projectSettings.section.inspirationImages') }}</h3>
+          <p class="settings-section-desc">{{ t('projectSettings.section.inspirationImagesDesc') }}</p>
 
           <BFormGroup>
-            <label :for="getFieldId('imageGenerationNotes')" class="form-label">{{ fieldLabels.imageGenerationNotes }}</label>
+            <label :for="getFieldId('imageGenerationNotes')" class="form-label">{{ t('projectSettings.fields.imageGenerationNotes') }}</label>
             <BFormTextarea
               :id="getFieldId('imageGenerationNotes')"
               v-model="localSettings.imageGenerationNotes"
-              :placeholder="fieldPlaceholders.imageGenerationNotes"
+              :placeholder="t('projectSettings.placeholders.imageGenerationNotes')"
               rows="3"
             />
-            <small class="form-text text-muted">{{ fieldDescriptions.imageGenerationNotes }}</small>
+            <small class="form-text text-muted">{{ t('projectSettings.descriptions.imageGenerationNotes') }}</small>
           </BFormGroup>
         </section>
       </div>
@@ -224,7 +194,7 @@ function getFieldId(field: string): string {
           :disabled="isSaving"
         >
           <span v-if="isSaving" class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
-          {{ isSaving ? 'Guardando...' : 'Guardar configuración' }}
+          {{ isSaving ? t('projectSettings.saving') : t('projectSettings.save') }}
         </BButton>
       </div>
     </form>

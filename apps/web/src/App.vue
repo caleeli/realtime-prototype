@@ -13,6 +13,7 @@ import {
   type Ref,
   watch,
 } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { ConnectionMode, VueFlow, Handle, Position, type EdgeMouseEvent } from '@vue-flow/core';
 import '@vue-flow/core/dist/style.css';
 
@@ -52,6 +53,7 @@ const pipelineService = new GenerationPipelineService({
 const sessionService = new ProjectSessionService({
   baseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api',
 });
+const { t } = useI18n();
 
 const SafeDynamicPreview = defineComponent({
   name: 'SafeDynamicPreview',
@@ -3309,9 +3311,9 @@ function sortUxRecommendationsByPriority(recommendations: string[]): string[] {
 
 function getScreenSaveState(screen: SessionScreenSummary) {
   if (screen.id === activeScreenId.value && isScreenDirty.value) {
-    return 'sin guardar';
+    return 'unsaved';
   }
-  return screen.lastRevision > 0 ? 'guardada' : 'sin guardar';
+  return screen.lastRevision > 0 ? 'saved' : 'unsaved';
 }
 
 function buildUserPayloadMessages(history: ChatMessage[]): GenerationMessage[] {
@@ -4327,7 +4329,7 @@ function onPromptKeydown(event: KeyboardEvent) {
         <span class="app-topbar-logo" aria-hidden="true">✦</span>
         <div class="app-topbar-titles">
           <span class="app-topbar-name">Rapid Prototype Builder</span>
-          <span class="app-topbar-tagline">Vista previa y flujos con IA</span>
+          <span class="app-topbar-tagline">{{ t('app.tagline') }}</span>
         </div>
       </div>
       <div class="app-topbar-actions">
@@ -4336,35 +4338,35 @@ function onPromptKeydown(event: KeyboardEvent) {
           class="project-select"
           :disabled="isLoadingProjects || isSessionLoading || isSaving"
           @change="onProjectSelectChange"
-          title="Proyecto activo"
+          :title="t('app.activeProject')"
         >
-          <option value="" disabled>Selecciona proyecto</option>
+          <option value="" disabled>{{ t('app.selectProject') }}</option>
           <option v-for="project in projects" :key="project.id" :value="project.id">
             {{ project.name }}
           </option>
         </select>
         <button type="button" class="app-text-btn" :disabled="isSessionLoading || isSaving" @click="onCreateProjectClick">
           <i class="bi bi-plus-lg" aria-hidden="true"></i>
-          Proyecto
+          {{ t('app.project') }}
         </button>
         <button type="button" class="app-text-btn" :disabled="isSessionLoading || isSaving || !activeProjectId" @click="onRenameProjectClick">
           <i class="bi bi-pencil-square" aria-hidden="true"></i>
-          Renombrar
+          {{ t('common.rename') }}
         </button>
         <button type="button" class="app-text-btn" :disabled="isSessionLoading || isSaving || !activeProjectId" @click="onDeleteProjectClick">
           <i class="bi bi-trash3" aria-hidden="true"></i>
-          Eliminar
+          {{ t('common.delete') }}
         </button>
-        <button type="button" class="app-icon-btn" title="Ejecutar prototype" aria-label="Ejecutar prototype" @click="onTopbarPlay">
+        <button type="button" class="app-icon-btn" :title="t('app.runPrototype')" :aria-label="t('app.runPrototype')" @click="onTopbarPlay">
           <i class="bi bi-play-fill" aria-hidden="true"></i>
         </button>
         <button type="button" class="app-text-btn" :disabled="isExportingProject || isSessionLoading || !activeProjectId" @click="onExportClick">
           <i class="bi bi-download" aria-hidden="true"></i>
-          {{ isExportingProject ? 'Exportando...' : 'Exportar' }}
+          {{ isExportingProject ? t('common.exporting') : t('common.export') }}
         </button>
         <button type="button" class="app-text-btn" @click="onShareClick">
           <i class="bi bi-share" aria-hidden="true"></i>
-          Compartir
+          {{ t('common.share') }}
         </button>
         <div class="app-avatar" aria-hidden="true">RP</div>
       </div>
@@ -4372,7 +4374,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 
     <div class="app-body">
       <aside class="app-rail" :class="{ 'app-rail--collapsed': railCollapsed }">
-        <nav class="app-rail-nav" aria-label="Secciones principales">
+        <nav class="app-rail-nav" :aria-label="t('app.mainSections')">
           <button
             type="button"
             class="app-rail-item"
@@ -4389,7 +4391,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             @click="navigateToFlows()"
           >
             <i class="bi bi-diagram-3" aria-hidden="true"></i>
-            <span class="app-rail-label">Flujos</span>
+            <span class="app-rail-label">{{ t('app.flows') }}</span>
           </button>
         <button
           type="button"
@@ -4398,7 +4400,7 @@ function onPromptKeydown(event: KeyboardEvent) {
           @click="navigateToExecution()"
         >
           <i class="bi bi-play-btn-fill" aria-hidden="true"></i>
-          <span class="app-rail-label">Ejecución</span>
+          <span class="app-rail-label">{{ t('app.execution') }}</span>
         </button>
           <button
             type="button"
@@ -4407,7 +4409,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             @click="navigateToPlaceholderNav('components')"
           >
             <i class="bi bi-grid-1x2" aria-hidden="true"></i>
-            <span class="app-rail-label">Componentes</span>
+            <span class="app-rail-label">{{ t('app.components') }}</span>
           </button>
           <button
             type="button"
@@ -4416,7 +4418,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             @click="navigateToImages()"
           >
             <i class="bi bi-image" aria-hidden="true"></i>
-            <span class="app-rail-label">Imágenes IA</span>
+            <span class="app-rail-label">{{ t('app.aiImages') }}</span>
           </button>
           <button
             type="button"
@@ -4425,18 +4427,18 @@ function onPromptKeydown(event: KeyboardEvent) {
             @click="navigateToSettings()"
           >
             <i class="bi bi-gear" aria-hidden="true"></i>
-            <span class="app-rail-label">Ajustes</span>
+            <span class="app-rail-label">{{ t('app.settings') }}</span>
           </button>
         </nav>
         <button
           type="button"
           class="app-rail-collapse"
           :aria-expanded="!railCollapsed"
-          :title="railCollapsed ? 'Expandir barra lateral' : 'Contraer barra lateral'"
+          :title="railCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')"
           @click="railCollapsed = !railCollapsed"
         >
           <i class="bi" :class="railCollapsed ? 'bi-chevron-double-right' : 'bi-chevron-double-left'" aria-hidden="true"></i>
-          <span class="visually-hidden">{{ railCollapsed ? 'Expandir navegación' : 'Contraer navegación' }}</span>
+          <span class="visually-hidden">{{ railCollapsed ? t('app.expandNavigation') : t('app.collapseNavigation') }}</span>
         </button>
       </aside>
 
@@ -4444,19 +4446,19 @@ function onPromptKeydown(event: KeyboardEvent) {
         v-if="primaryNav === 'builder'"
         class="builder-lateral"
         :class="{ 'builder-lateral--minimized': isBuilderPanelMinimized }"
-        aria-label="Panel del builder"
+        :aria-label="t('builder.panel')"
       >
         <div class="builder-lateral-header">
           <div class="builder-lateral-title-wrap">
             <h2 class="builder-lateral-title">Builder</h2>
-            <p v-if="!isBuilderPanelMinimized" class="builder-lateral-sub">Describe la pantalla que quieres generar.</p>
+            <p v-if="!isBuilderPanelMinimized" class="builder-lateral-sub">{{ t('builder.describeScreen') }}</p>
           </div>
           <button
             type="button"
             class="builder-lateral-minimize-btn"
             :aria-expanded="!isBuilderPanelMinimized"
-            :title="isBuilderPanelMinimized ? 'Expandir panel' : 'Minimizar panel'"
-            :aria-label="isBuilderPanelMinimized ? 'Expandir panel del builder' : 'Minimizar panel del builder'"
+            :title="isBuilderPanelMinimized ? t('builder.expandPanel') : t('builder.minimizePanel')"
+            :aria-label="isBuilderPanelMinimized ? t('builder.expandBuilderPanel') : t('builder.minimizeBuilderPanel')"
             @click="toggleBuilderPanelMinimized"
           >
             <i class="bi" :class="isBuilderPanelMinimized ? 'bi-arrows-angle-expand' : 'bi-arrows-angle-contract'" aria-hidden="true"></i>
@@ -4464,14 +4466,14 @@ function onPromptKeydown(event: KeyboardEvent) {
         </div>
 
         <div class="floating-prompt-title">
-          <h3 class="builder-lateral-section-title">Prompt</h3>
+          <h3 class="builder-lateral-section-title">{{ t('common.prompt') }}</h3>
           <button
             type="button"
             class="conversation-toggle-btn"
             :aria-expanded="isConversationVisible"
             aria-controls="conversation-list"
-            :title="isConversationVisible ? 'Ocultar historial' : 'Mostrar historial'"
-            :aria-label="isConversationVisible ? 'Ocultar historial de conversación' : 'Mostrar historial de conversación'"
+            :title="isConversationVisible ? t('builder.hideHistory') : t('builder.showHistory')"
+            :aria-label="isConversationVisible ? t('builder.hideConversationHistory') : t('builder.showConversationHistory')"
             @click="toggleConversationVisibility"
           >
             <i class="bi bi-chat-left-text" aria-hidden="true"></i>
@@ -4479,7 +4481,7 @@ function onPromptKeydown(event: KeyboardEvent) {
         </div>
         <div v-if="isConversationVisible" id="conversation-list" class="conversation-list">
           <div v-if="conversation.length === 0" class="conversation-empty">
-            Aún no hay mensajes. Escribe uno y pulsa ▶ para comenzar.
+            {{ t('builder.noMessages') }}
           </div>
           <div
             v-for="(entry, index) in conversation"
@@ -4552,53 +4554,53 @@ function onPromptKeydown(event: KeyboardEvent) {
             type="button"
             class="prompt-action-generate prompt-action-btn"
             :disabled="isGenerating"
-            title="Generar pantalla (Enter)"
-            aria-label="Generar pantalla"
+            :title="t('builder.generateScreen') + ' (Enter)'"
+            :aria-label="t('builder.generateScreen')"
             @click="onGenerate"
           >
             <span v-if="isGenerating" class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
             <i v-else class="bi bi-play-fill" aria-hidden="true"></i>
-            <span class="visually-hidden">Generar pantalla</span>
+            <span class="visually-hidden">{{ t('builder.generateScreen') }}</span>
           </button>
           <button
             type="button"
             class="conversation-refresh prompt-action-btn"
             :disabled="isGenerating || isGeneratingSelectorImprovements || !lastGeneratedOutput"
-            title="Evaluar mejoras UX manualmente"
-            aria-label="Evaluar mejoras UX manualmente"
+            :title="t('builder.evaluateUx')"
+            :aria-label="t('builder.evaluateUx')"
             @click="onGenerateUxImprovementsManual"
           >
             <span v-if="isGeneratingSelectorImprovements" class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
             <i v-else class="bi bi-lightning-charge" aria-hidden="true"></i>
-            <span class="visually-hidden">Evaluar mejoras UX manualmente</span>
+            <span class="visually-hidden">{{ t('builder.evaluateUx') }}</span>
           </button>
           <button
             type="button"
             class="conversation-refresh prompt-action-btn"
             :disabled="isGenerating || lastUserMessageIndex < 0"
-            title="Regenerar desde el último mensaje (Ctrl + Enter)"
-            aria-label="Regenerar desde el último mensaje"
+            :title="t('builder.regenerateFromLast') + ' (Ctrl + Enter)'"
+            :aria-label="t('builder.regenerateFromLast')"
             @click="onRefresh(lastUserMessageIndex)"
           >
             <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
-            <span class="visually-hidden">Regenerar desde el último mensaje</span>
+            <span class="visually-hidden">{{ t('builder.regenerateFromLast') }}</span>
           </button>
           <button
             type="button"
             class="conversation-rollback prompt-action-btn"
             :disabled="isGenerating || lastUserMessageIndex < 0"
-            title="Quitar último mensaje del usuario (Ctrl + Shift + Enter)"
-            aria-label="Quitar último mensaje del usuario y respuestas siguientes"
+            :title="t('builder.removeLastUserMessage') + ' (Ctrl + Shift + Enter)'"
+            :aria-label="t('builder.removeLastUserMessage')"
             @click="onRollback"
           >
             <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i>
-            <span class="visually-hidden">Quitar último mensaje del usuario y respuestas siguientes</span>
+            <span class="visually-hidden">{{ t('builder.removeLastUserMessage') }}</span>
           </button>
         </div>
 
         <div v-if="!isBuilderPanelMinimized" class="builder-context">
           <div class="builder-context-header">
-            <span class="builder-context-heading">Contexto</span>
+            <span class="builder-context-heading">{{ t('builder.context') }}</span>
           </div>
           <dl class="builder-context-list">
             <div class="builder-context-row">
@@ -4614,15 +4616,15 @@ function onPromptKeydown(event: KeyboardEvent) {
               </dd>
             </div>
             <div class="builder-context-row builder-context-row--theme">
-              <dt>Tema</dt>
+              <dt>{{ t('common.theme') }}</dt>
               <dd>
                 <label class="theme-control theme-control--compact" @touchstart="onThemeSwipeStart" @touchend="onThemeSwipeEnd">
-                  <div class="theme-switch" aria-label="Cambio rápido de tema">
-                    <button type="button" class="theme-switch-btn" @click="switchTheme('left')" title="Tema anterior (←)">
+                  <div class="theme-switch" :aria-label="t('builder.quickThemeSwitch')">
+                    <button type="button" class="theme-switch-btn" @click="switchTheme('left')" :title="t('builder.previousTheme') + ' (←)'">
                       ◀
                     </button>
                     <span class="theme-current">{{ activeThemeLabel }}</span>
-                    <button type="button" class="theme-switch-btn" @click="switchTheme('right')" title="Tema siguiente (→)">
+                    <button type="button" class="theme-switch-btn" @click="switchTheme('right')" :title="t('builder.nextTheme') + ' (→)'">
                       ▶
                     </button>
                   </div>
@@ -4638,7 +4640,7 @@ function onPromptKeydown(event: KeyboardEvent) {
           class="builder-feedback-ok"
         >
           <i class="bi bi-check-circle-fill" aria-hidden="true"></i>
-          <span>Flujo de pantalla sin sugerencias UX pendientes.</span>
+          <span>{{ t('builder.noPendingUx') }}</span>
         </div>
         <p class="prompt-msg builder-prompt-msg">{{ message }}</p>
       </aside>
@@ -4647,7 +4649,7 @@ function onPromptKeydown(event: KeyboardEvent) {
         <section v-if="primaryNav === 'builder'" class="canvas-wrap">
       <header class="canvas-header">
         <div class="canvas-workspace-head">
-          <div class="workspace-tabs" role="tablist" aria-label="Vista del lienzo">
+          <div class="workspace-tabs" role="tablist" :aria-label="t('builder.canvasView')">
             <button
               type="button"
               role="tab"
@@ -4656,7 +4658,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               :aria-selected="editorWorkspaceTab === 'canvas'"
               @click="editorWorkspaceTab = 'canvas'"
             >
-              Lienzo
+              {{ t('common.canvas') }}
             </button>
             <button
               type="button"
@@ -4666,7 +4668,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               :aria-selected="editorWorkspaceTab === 'data'"
               @click="editorWorkspaceTab = 'data'"
             >
-              Datos
+              {{ t('common.data') }}
             </button>
             <button
               type="button"
@@ -4696,13 +4698,13 @@ function onPromptKeydown(event: KeyboardEvent) {
               :aria-selected="editorWorkspaceTab === 'states'"
               @click="editorWorkspaceTab = 'states'"
             >
-              Estados
+              {{ t('common.states') }}
             </button>
           </div>
           <div class="screen-toolbar">
             <label>
               <i class="bi bi-collection" aria-hidden="true"></i>
-              Pantallas
+              {{ t('app.screens') }}
               <select
                 v-model="activeScreenId"
                 class="screen-select"
@@ -4716,7 +4718,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             </label>
             <button type="button" class="screen-action-btn" :disabled="isSessionLoading || isSaving" @click="onCreateScreenClick">
               <i class="bi bi-plus-lg" aria-hidden="true"></i>
-              Nueva
+              {{ t('common.new') }}
             </button>
             <button
               type="button"
@@ -4725,7 +4727,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               @click="onDuplicateScreenClick"
             >
               <i class="bi bi-files" aria-hidden="true"></i>
-              Duplicar
+              {{ t('common.duplicate') }}
             </button>
             <button
               type="button"
@@ -4734,7 +4736,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               @click="onRenameScreenClick"
             >
               <i class="bi bi-pencil-square" aria-hidden="true"></i>
-              Renombrar
+              {{ t('common.rename') }}
             </button>
             <button
               type="button"
@@ -4743,7 +4745,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               @click="onDeleteScreenClick"
             >
               <i class="bi bi-trash3" aria-hidden="true"></i>
-              Eliminar
+              {{ t('common.delete') }}
             </button>
             <button
               type="button"
@@ -4752,7 +4754,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               @click="onSaveCurrentScreenClick"
             >
               <i class="bi bi-save2" aria-hidden="true"></i>
-              {{ isSaving ? 'Guardando...' : 'Guardar' }}
+              {{ isSaving ? t('common.saving') : t('common.save') }}
             </button>
           </div>
         </div>
@@ -4792,45 +4794,45 @@ function onPromptKeydown(event: KeyboardEvent) {
             />
           </div>
         </aside>
-        <div v-if="popupState.isOpen" class="screen-popup-backdrop" role="dialog" aria-modal="true" aria-label="Pantalla modal" @click="closePopupScreen">
+        <div v-if="popupState.isOpen" class="screen-popup-backdrop" role="dialog" aria-modal="true" :aria-label="t('app.modalScreen')" @click="closePopupScreen">
           <div class="screen-popup-panel" @click.stop>
             <header class="screen-popup-header">
               <strong>{{ popupState.title || 'Popup' }}</strong>
-              <button type="button" class="screen-popup-close" @click="closePopupScreen">Cerrar</button>
+              <button type="button" class="screen-popup-close" @click="closePopupScreen">{{ t('common.close') }}</button>
             </header>
             <div class="screen-popup-content">
-              <p v-if="popupState.isLoading" class="screen-popup-message">Cargando pantalla popup...</p>
+              <p v-if="popupState.isLoading" class="screen-popup-message">{{ t('app.loadingPopupScreen') }}</p>
               <p v-else-if="popupState.error" class="screen-popup-message screen-popup-error">{{ popupState.error }}</p>
               <component v-else-if="popupState.component" :is="popupState.component" />
-              <p v-else class="screen-popup-message">No hay contenido para mostrar.</p>
+              <p v-else class="screen-popup-message">{{ t('app.noContent') }}</p>
             </div>
           </div>
         </div>
         <div v-if="isGenerating" class="canvas-status-layer">
           <div class="canvas-status-chip">
             <span class="canvas-status-dot" aria-hidden="true"></span>
-            {{ generatedComponent ? 'Actualizando pantalla...' : 'Generando pantalla...' }}
+            {{ generatedComponent ? t('builder.updatingScreen') : t('builder.generatingScreen') }}
           </div>
         </div>
         <div v-if="isGeneratingSelectorImprovements && !isGenerating" class="canvas-status-layer canvas-status-layer--secondary">
-          <div class="canvas-status-chip">Analizando mejoras UX por zonas...</div>
+          <div class="canvas-status-chip">{{ t('builder.analyzingUxZones') }}</div>
         </div>
       </article>
 
       <article v-show="editorWorkspaceTab === 'data'" class="canvas-surface editor-tab-panel editor-tab-panel--data">
         <template v-if="!lastGeneratedOutput">
-          <p class="editor-data-empty">Genera o abre una pantalla para editar el JSON de datos y usar el asistente de IA.</p>
+          <p class="editor-data-empty">{{ t('editor.generateOrOpenForData') }}</p>
         </template>
         <div
           v-else
           class="data-editor-panel"
           role="region"
-          aria-label="Editor de data JSON"
+          :aria-label="t('editor.dataJsonEditor')"
         >
           <header class="data-editor-header data-editor-header--embedded">
             <h3>Data JSON</h3>
           </header>
-          <label class="data-editor-input-label" for="dataInstructionInput">Instrucción para IA</label>
+          <label class="data-editor-input-label" for="dataInstructionInput">{{ t('editor.aiInstruction') }}</label>
           <textarea
             id="dataInstructionInput"
             v-model="dataInstructionText"
@@ -4846,7 +4848,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               :disabled="isApplyingDataGeneration || isGenerating || !dataInstructionText.trim().length"
               @click="onGenerateDataFromPrompt"
             >
-              {{ isApplyingDataGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
+              {{ isApplyingDataGeneration ? t('editor.callingAi') : t('editor.applyWithAi') }}
             </button>
             <button
               type="button"
@@ -4875,7 +4877,7 @@ function onPromptKeydown(event: KeyboardEvent) {
           <p v-if="dataEditorError" class="data-editor-error">{{ dataEditorError }}</p>
           <div class="data-editor-actions">
             <button type="button" class="screen-action-btn" :disabled="isApplyingData" @click="resetDataEditorDraft">
-              Cancelar
+              {{ t('common.cancel') }}
             </button>
             <button
               type="button"
@@ -4883,7 +4885,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               :disabled="isApplyingData || !dataEditorJson.trim().length"
               @click="applyDataEditorChanges"
             >
-              {{ isApplyingData ? 'Aplicando...' : 'Aplicar cambios' }}
+              {{ isApplyingData ? t('common.applying') : t('editor.applyChanges') }}
             </button>
           </div>
         </div>
@@ -4891,24 +4893,24 @@ function onPromptKeydown(event: KeyboardEvent) {
 
       <article v-show="editorWorkspaceTab === 'pug'" class="canvas-surface editor-tab-panel">
         <template v-if="!lastGeneratedOutput">
-          <p class="editor-data-empty">Genera o abre una pantalla para editar el PUG y usar el asistente de IA.</p>
+          <p class="editor-data-empty">{{ t('editor.generateOrOpenForPug') }}</p>
         </template>
         <div
           v-else
           class="data-editor-panel"
           role="region"
-          aria-label="Editor de PUG"
+          :aria-label="t('editor.pugEditor')"
         >
           <header class="data-editor-header data-editor-header--embedded">
-            <h3>Editar PUG</h3>
+            <h3>{{ t('editor.editPug') }}</h3>
           </header>
-          <label class="data-editor-input-label" for="pugInstructionInput">Instrucción para IA</label>
+          <label class="data-editor-input-label" for="pugInstructionInput">{{ t('editor.aiInstruction') }}</label>
           <textarea
             id="pugInstructionInput"
             v-model="pugInstructionText"
             rows="3"
             class="data-editor-instruction-textarea"
-            placeholder="Ej: Sustituye el formulario actual por una tabla con paginación"
+            :placeholder="t('editor.pugPlaceholderExample')"
             :disabled="isApplyingPugGeneration || isApplyingPug"
           ></textarea>
           <div class="data-editor-inline-actions">
@@ -4918,7 +4920,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               :disabled="isApplyingPugGeneration || isGenerating || !pugInstructionText.trim().length"
               @click="onGeneratePugFromPrompt"
             >
-              {{ isApplyingPugGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
+              {{ isApplyingPugGeneration ? t('editor.callingAi') : t('editor.applyWithAi') }}
             </button>
             <button
               type="button"
@@ -4947,7 +4949,7 @@ function onPromptKeydown(event: KeyboardEvent) {
           <p v-if="pugEditorError" class="data-editor-error">{{ pugEditorError }}</p>
           <div class="data-editor-actions">
             <button type="button" class="screen-action-btn" :disabled="isApplyingPug" @click="resetPugEditorDraft">
-              Cancelar
+              {{ t('common.cancel') }}
             </button>
             <button
               type="button"
@@ -4955,7 +4957,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               :disabled="isApplyingPug || !pugEditorPug.trim().length"
               @click="applyPugEditorChanges"
             >
-              {{ isApplyingPug ? 'Aplicando...' : 'Aplicar cambios' }}
+              {{ isApplyingPug ? t('common.applying') : t('editor.applyChanges') }}
             </button>
           </div>
         </div>
@@ -4963,18 +4965,18 @@ function onPromptKeydown(event: KeyboardEvent) {
 
       <article v-show="editorWorkspaceTab === 'css'" class="canvas-surface editor-tab-panel">
         <template v-if="!lastGeneratedOutput">
-          <p class="editor-data-empty">Genera o abre una pantalla para editar el CSS y usar el asistente de IA.</p>
+          <p class="editor-data-empty">{{ t('editor.generateOrOpenForCss') }}</p>
         </template>
         <div
           v-else
           class="data-editor-panel"
           role="region"
-          aria-label="Editor de CSS"
+          :aria-label="t('editor.cssEditor')"
         >
           <header class="data-editor-header data-editor-header--embedded">
-            <h3>Editar CSS</h3>
+            <h3>{{ t('editor.editCss') }}</h3>
           </header>
-          <label class="data-editor-input-label" for="cssInstructionInput">Instrucción para IA</label>
+          <label class="data-editor-input-label" for="cssInstructionInput">{{ t('editor.aiInstruction') }}</label>
           <textarea
             id="cssInstructionInput"
             v-model="cssInstructionText"
@@ -4990,7 +4992,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               :disabled="isApplyingCssGeneration || isGenerating || !cssInstructionText.trim().length"
               @click="onGenerateCssFromPrompt"
             >
-              {{ isApplyingCssGeneration ? 'Llamando IA...' : 'Aplicar con IA' }}
+              {{ isApplyingCssGeneration ? t('editor.callingAi') : t('editor.applyWithAi') }}
             </button>
             <button
               type="button"
@@ -5019,7 +5021,7 @@ function onPromptKeydown(event: KeyboardEvent) {
           <p v-if="cssEditorError" class="data-editor-error">{{ cssEditorError }}</p>
           <div class="data-editor-actions">
             <button type="button" class="screen-action-btn" :disabled="isApplyingCss" @click="resetCssEditorDraft">
-              Cancelar
+              {{ t('common.cancel') }}
             </button>
             <button
               type="button"
@@ -5027,7 +5029,7 @@ function onPromptKeydown(event: KeyboardEvent) {
               :disabled="isApplyingCss"
               @click="applyCssEditorChanges"
             >
-              {{ isApplyingCss ? 'Aplicando...' : 'Aplicar cambios' }}
+              {{ isApplyingCss ? t('common.applying') : t('editor.applyChanges') }}
             </button>
           </div>
         </div>
@@ -5035,7 +5037,7 @@ function onPromptKeydown(event: KeyboardEvent) {
 
       <article v-show="editorWorkspaceTab === 'states'" class="canvas-surface editor-tab-panel">
         <p class="editor-states-hint">
-          Los estados de navegación entre pantallas se gestionan en la vista <strong>Flujos</strong> del menú lateral.
+          {{ t('editor.statesManagedInFlows') }} <strong>{{ t('app.flows') }}</strong> {{ t('editor.fromSideMenu') }}
         </p>
       </article>
     </section>
@@ -5061,7 +5063,7 @@ function onPromptKeydown(event: KeyboardEvent) {
         <div class="flow-workspace-head">
           <div class="flow-toolbar flow-toolbar--split">
             <div class="flow-toolbar-left">
-              <div class="workspace-tabs workspace-tabs--flow" role="tablist" aria-label="Vista del flujo">
+              <div class="workspace-tabs workspace-tabs--flow" role="tablist" :aria-label="t('flow.view')">
                 <button
                   type="button"
                   role="tab"
@@ -5070,7 +5072,7 @@ function onPromptKeydown(event: KeyboardEvent) {
                   :aria-selected="flowWorkspaceTab === 'canvas'"
                   @click="flowWorkspaceTab = 'canvas'"
                 >
-                  Lienzo
+                  {{ t('common.canvas') }}
                 </button>
                 <button
                   type="button"
@@ -5080,7 +5082,7 @@ function onPromptKeydown(event: KeyboardEvent) {
                   :aria-selected="flowWorkspaceTab === 'data'"
                   @click="flowWorkspaceTab = 'data'"
                 >
-                  Datos
+                  {{ t('common.data') }}
                 </button>
                 <button
                   type="button"
@@ -5090,24 +5092,24 @@ function onPromptKeydown(event: KeyboardEvent) {
                   :aria-selected="flowWorkspaceTab === 'states'"
                   @click="flowWorkspaceTab = 'states'"
                 >
-                  Estados
+                  {{ t('common.states') }}
                 </button>
               </div>
             </div>
             <div class="flow-toolbar-actions">
-              <div class="flow-zoom-controls" aria-label="Zoom del lienzo">
+              <div class="flow-zoom-controls" :aria-label="t('flow.canvasZoom')">
                 <span class="flow-zoom-readout">{{ flowZoomPercent }}%</span>
-                <button type="button" class="screen-action-btn flow-zoom-btn" title="Alejar" aria-label="Alejar" @click="flowZoomOut">
+                <button type="button" class="screen-action-btn flow-zoom-btn" :title="t('flow.zoomOut')" :aria-label="t('flow.zoomOut')" @click="flowZoomOut">
                   <i class="bi bi-zoom-out" aria-hidden="true"></i>
                 </button>
-                <button type="button" class="screen-action-btn flow-zoom-btn" title="Acercar" aria-label="Acercar" @click="flowZoomIn">
+                <button type="button" class="screen-action-btn flow-zoom-btn" :title="t('flow.zoomIn')" :aria-label="t('flow.zoomIn')" @click="flowZoomIn">
                   <i class="bi bi-zoom-in" aria-hidden="true"></i>
                 </button>
                 <button
                   type="button"
                   class="screen-action-btn flow-zoom-btn"
-                  title="Ajustar a la vista"
-                  aria-label="Ajustar a la vista"
+                  :title="t('flow.fitView')"
+                  :aria-label="t('flow.fitView')"
                   @click="flowFitView"
                 >
                   <i class="bi bi-arrows-fullscreen" aria-hidden="true"></i>
@@ -5120,7 +5122,7 @@ function onPromptKeydown(event: KeyboardEvent) {
                 @click="addFlowTask"
               >
                 <i class="bi bi-plus-lg" aria-hidden="true"></i>
-                Nueva tarea
+                {{ t('flow.newTask') }}
               </button>
               <button
                 type="button"
@@ -5129,7 +5131,7 @@ function onPromptKeydown(event: KeyboardEvent) {
                 @click="removeSelectedFlowEdge"
               >
                 <i class="bi bi-trash3" aria-hidden="true"></i>
-                Eliminar flecha seleccionada
+                {{ t('flow.deleteSelectedArrow') }}
               </button>
               <button
                 type="button"
@@ -5138,14 +5140,14 @@ function onPromptKeydown(event: KeyboardEvent) {
                 @click="setSelectedFlowEdgeSubmitPrimary"
               >
                 <i class="bi bi-flag-fill" aria-hidden="true"></i>
-                {{ selectedFlowEdge?.isSubmitPrimary ? 'Quitar submit principal' : 'Marcar submit principal' }}
+                {{ selectedFlowEdge?.isSubmitPrimary ? t('flow.unmarkPrimarySubmit') : t('flow.markPrimarySubmit') }}
               </button>
             </div>
           </div>
         </div>
         <template v-if="flowWorkspaceTab === 'canvas'">
         <div v-if="flowNodes.length === 0" class="canvas-state">
-          No hay pantallas aún. Crea o asigna una pantalla para iniciar.
+          {{ t('flow.noScreens') }}
         </div>
         <div v-else class="flow-canvas">
           <VueFlow
@@ -5224,7 +5226,7 @@ function onPromptKeydown(event: KeyboardEvent) {
                     type="text"
                     :value="getFlowNodeView(id)?.task?.title ?? ''"
                     @input="onFlowNodeInput(id, $event)"
-                    placeholder="Nombre de tarea"
+                    :placeholder="t('flow.taskName')"
                   />
                 <button
                   type="button"
@@ -5233,13 +5235,13 @@ function onPromptKeydown(event: KeyboardEvent) {
                   :class="{ 'flow-task-start-btn--active': getFlowNodeView(id)?.task?.isStartTask }"
                   :aria-label="
                     getFlowNodeView(id)?.task?.isStartTask
-                      ? 'Esta tarea ya es el inicio'
-                      : 'Marcar como tarea inicial'
+                      ? t('flow.taskAlreadyStart')
+                      : t('flow.markAsStartTask')
                   "
                   :title="
                     getFlowNodeView(id)?.task?.isStartTask
-                      ? 'Esta tarea ya es el inicio'
-                      : 'Marcar como tarea inicial'
+                      ? t('flow.taskAlreadyStart')
+                      : t('flow.markAsStartTask')
                   "
                   @click="setFlowTaskAsStart(id)"
                 >
@@ -5253,11 +5255,11 @@ function onPromptKeydown(event: KeyboardEvent) {
                   v-if="getFlowNodeView(id)?.task?.isStartTask"
                   class="flow-task-start-badge"
                 >
-                  Inicio
+                  {{ t('flow.start') }}
                 </span>
                   <button type="button" class="screen-action-btn flow-task-remove" @click="removeFlowTask(id)">×</button>
                 </header>
-                <label class="flow-task-id-label" :for="getFlowTaskFieldId(id, 'task-id')">ID de tarea</label>
+                <label class="flow-task-id-label" :for="getFlowTaskFieldId(id, 'task-id')">{{ t('flow.taskId') }}</label>
                 <input
                   :id="getFlowTaskFieldId(id, 'task-id')"
                   class="flow-task-id-input"
@@ -5265,13 +5267,13 @@ function onPromptKeydown(event: KeyboardEvent) {
                   :value="getFlowNodeView(id)?.task?.id ?? ''"
                   @change="onFlowNodeIdChange(id, $event)"
                 />
-                <label class="flow-task-screen-label">Pantalla asociada</label>
+                <label class="flow-task-screen-label">{{ t('flow.associatedScreen') }}</label>
                 <select
                   class="flow-task-screen-select"
                   :value="getFlowNodeView(id)?.task?.screenId ?? ''"
                   @change="onFlowTaskScreenChange(id, $event)"
                 >
-                  <option value="">Sin pantalla</option>
+                  <option value="">{{ t('flow.noScreen') }}</option>
                   <option v-for="screen in screens" :key="screen.id" :value="screen.id">{{ screen.name }}</option>
                 </select>
                 <label class="flow-task-popup-check">
@@ -5280,11 +5282,11 @@ function onPromptKeydown(event: KeyboardEvent) {
                     :checked="getFlowNodeView(id)?.task?.isPopupTask ?? false"
                     @change="toggleFlowTaskPopupType(id)"
                   />
-                  <span>Marcar como popup</span>
+                  <span>{{ t('flow.markAsPopup') }}</span>
                 </label>
                 <div class="flow-task-preview">
                   <div v-if="getFlowNodeView(id)?.preview?.isLoading" class="flow-preview-placeholder">
-                    Cargando vista previa...
+                    {{ t('flow.loadingPreview') }}
                   </div>
                   <p v-else-if="getFlowNodeView(id)?.preview?.error" class="flow-preview-error">
                     {{ getFlowNodeView(id)?.preview?.error }}
@@ -5294,11 +5296,11 @@ function onPromptKeydown(event: KeyboardEvent) {
                     :is="getFlowNodeView(id)?.preview?.component"
                     class="flow-preview-component"
                   />
-                  <p v-else class="flow-preview-placeholder">Sin vista previa. Guarda la pantalla o asigna una pantalla.</p>
+                  <p v-else class="flow-preview-placeholder">{{ t('flow.noPreview') }}</p>
                 </div>
                 <footer class="flow-task-footer">
                   <button type="button" class="screen-action-btn flow-task-open-btn" @click="onFlowNodeOpen(id)">
-                    Abrir pantalla
+                    {{ t('flow.openScreen') }}
                   </button>
                 </footer>
               </div>
@@ -5314,7 +5316,7 @@ function onPromptKeydown(event: KeyboardEvent) {
         </div>
         <div v-show="flowWorkspaceTab === 'states'" class="flow-tab-panel flow-aux-panel flow-tab-panel--muted">
           <p class="editor-states-hint">
-            Conecta nodos en el lienzo para marcar transiciones. Próximamente: estados explícitos y condiciones en cada arista.
+            {{ t('flow.statesHint') }}
           </p>
         </div>
       </article>
@@ -5325,12 +5327,12 @@ function onPromptKeydown(event: KeyboardEvent) {
         <header class="canvas-header">
           <div class="canvas-header-top">
             <div>
-              <h1>Ejecución</h1>
+              <h1>{{ t('app.execution') }}</h1>
               <p>{{ executionStartTaskLabel }}</p>
               <p>{{ executionCurrentTaskLabel }}</p>
             </div>
             <div class="screen-toolbar">
-              <button type="button" class="screen-action-btn" @click="navigateToBuilder()">Volver al builder</button>
+              <button type="button" class="screen-action-btn" @click="navigateToBuilder()">{{ t('app.backToBuilder') }}</button>
             </div>
           </div>
         </header>
@@ -5342,24 +5344,24 @@ function onPromptKeydown(event: KeyboardEvent) {
             {{ message }}
           </div>
         </Transition>
-        <div v-if="popupState.isOpen" class="screen-popup-backdrop" role="dialog" aria-modal="true" aria-label="Pantalla modal" @click="closePopupScreen">
+        <div v-if="popupState.isOpen" class="screen-popup-backdrop" role="dialog" aria-modal="true" :aria-label="t('app.modalScreen')" @click="closePopupScreen">
           <div class="screen-popup-panel" @click.stop>
             <header class="screen-popup-header">
               <strong>{{ popupState.title || 'Popup' }}</strong>
-              <button type="button" class="screen-popup-close" @click="closePopupScreen">Cerrar</button>
+              <button type="button" class="screen-popup-close" @click="closePopupScreen">{{ t('common.close') }}</button>
             </header>
             <div class="screen-popup-content">
-              <p v-if="popupState.isLoading" class="screen-popup-message">Cargando pantalla popup...</p>
+              <p v-if="popupState.isLoading" class="screen-popup-message">{{ t('app.loadingPopupScreen') }}</p>
               <p v-else-if="popupState.error" class="screen-popup-message screen-popup-error">{{ popupState.error }}</p>
               <component v-else-if="popupState.component" :is="popupState.component" />
-              <p v-else class="screen-popup-message">No hay contenido para mostrar.</p>
+              <p v-else class="screen-popup-message">{{ t('app.noContent') }}</p>
             </div>
           </div>
         </div>
         <div v-if="isGenerating" class="canvas-status-layer">
           <div class="canvas-status-chip">
             <span class="canvas-status-dot" aria-hidden="true"></span>
-            {{ generatedComponent ? 'Actualizando pantalla...' : 'Cargando pantalla...' }}
+            {{ generatedComponent ? t('builder.updatingScreen') : t('app.loadingScreen') }}
           </div>
         </div>
       </article>
@@ -5376,44 +5378,44 @@ function onPromptKeydown(event: KeyboardEvent) {
 
     <section v-else-if="primaryNav === 'images'" class="canvas-wrap">
       <article class="canvas-surface" style="padding: 1rem; overflow: auto;">
-        <h2>Administrador de imágenes IA</h2>
-        <p>Las imágenes se guardan por proyecto y pueden reutilizarse en prompts.</p>
+        <h2>{{ t('images.title') }}</h2>
+        <p>{{ t('images.subtitle') }}</p>
         <div class="screen-toolbar" style="margin-bottom: 0.75rem;">
-          <input v-model="imageNameInput" type="text" class="screen-select" placeholder="Nombre (opcional)" />
-          <input v-model="imageDescriptionInput" type="text" class="screen-select" placeholder="Descripción de la imagen" />
-          <input v-model="imageGenerationPrompt" type="text" class="screen-select" placeholder="Prompt para generar imagen" />
-          <input v-model.number="imageGenerationWidth" type="number" min="128" max="4096" class="screen-select" placeholder="Ancho" />
-          <select v-model="imageGenerationAspect" class="screen-select" title="Proporción">
-            <option value="1:1">1:1 (cuadrada)</option>
-            <option value="2:3">2:3 (vertical)</option>
-            <option value="3:2">3:2 (horizontal)</option>
+          <input v-model="imageNameInput" type="text" class="screen-select" :placeholder="t('images.nameOptional')" />
+          <input v-model="imageDescriptionInput" type="text" class="screen-select" :placeholder="t('images.description')" />
+          <input v-model="imageGenerationPrompt" type="text" class="screen-select" :placeholder="t('images.generatePrompt')" />
+          <input v-model.number="imageGenerationWidth" type="number" min="128" max="4096" class="screen-select" :placeholder="t('images.width')" />
+          <select v-model="imageGenerationAspect" class="screen-select" :title="t('images.aspectRatio')">
+            <option value="1:1">1:1 ({{ t('images.square') }})</option>
+            <option value="2:3">2:3 ({{ t('images.vertical') }})</option>
+            <option value="3:2">3:2 ({{ t('images.horizontal') }})</option>
           </select>
-          <input :value="imageGenerationHeight" type="number" class="screen-select" placeholder="Alto" readonly />
+          <input :value="imageGenerationHeight" type="number" class="screen-select" :placeholder="t('images.height')" readonly />
           <button type="button" class="screen-action-btn" :disabled="isGeneratingProjectImage" @click="onGenerateProjectImage">
-            {{ isGeneratingProjectImage ? 'Generando...' : 'Generar' }}
+            {{ isGeneratingProjectImage ? t('common.generating') : t('common.generate') }}
           </button>
           <label class="screen-action-btn" style="margin: 0;">
-            {{ isUploadingProjectImage ? 'Subiendo...' : 'Cargar' }}
+            {{ isUploadingProjectImage ? t('common.uploading') : t('common.upload') }}
             <input type="file" accept="image/*" style="display:none" :disabled="isUploadingProjectImage" @change="onUploadProjectImage" />
           </label>
         </div>
         <div class="screen-toolbar" style="margin-bottom: 1rem;">
           <select v-model="selectedProjectImageId" class="screen-select">
-            <option value="">Selecciona imagen</option>
+            <option value="">{{ t('images.selectImage') }}</option>
             <option v-for="image in projectImages" :key="image.id" :value="image.id">{{ image.name }}</option>
           </select>
-          <input v-model="imageEditPrompt" type="text" class="screen-select" placeholder="Prompt para editar/mejorar imagen" />
-          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId || isGeneratingProjectImage" @click="onEditSelectedProjectImage">Editar IA</button>
-          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId" @click="onSaveSelectedImageMetadata">Guardar descripción</button>
+          <input v-model="imageEditPrompt" type="text" class="screen-select" :placeholder="t('images.editPrompt')" />
+          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId || isGeneratingProjectImage" @click="onEditSelectedProjectImage">{{ t('images.editAi') }}</button>
+          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId" @click="onSaveSelectedImageMetadata">{{ t('images.saveDescription') }}</button>
           <button type="button" class="screen-action-btn" :disabled="!selectedProjectImage?.rollbackAvailable" @click="onRollbackSelectedImage">Rollback</button>
           <button type="button" class="screen-action-btn" :disabled="!selectedProjectImage?.redoAvailable" @click="onRedoSelectedImage">Redo</button>
-          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId" @click="downloadSelectedImage">Descargar</button>
-          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId" @click="useSelectedImageInPrompt">Usar en prompt</button>
+          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId" @click="downloadSelectedImage">{{ t('common.download') }}</button>
+          <button type="button" class="screen-action-btn" :disabled="!selectedProjectImageId" @click="useSelectedImageInPrompt">{{ t('images.useInPrompt') }}</button>
         </div>
-        <p v-if="isLoadingProjectImages">Cargando imágenes...</p>
+        <p v-if="isLoadingProjectImages">{{ t('images.loadingImages') }}</p>
         <div v-if="selectedProjectImage?.currentImageUrl">
           <div class="screen-toolbar" style="margin-bottom: 0.5rem;">
-            <label>Alto máximo preview</label>
+            <label>{{ t('images.maxPreviewHeight') }}</label>
             <input v-model.number="imagePreviewMaxHeight" type="number" min="120" max="1200" class="screen-select" />
           </div>
           <img
@@ -5422,7 +5424,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             :style="{ maxWidth: '100%', height: 'auto', maxHeight: `${imagePreviewMaxHeight}px`, border: '1px solid #e5e7eb', borderRadius: '8px', objectFit: 'contain' }"
           />
           <p style="margin-top: 0.25rem;">{{ selectedProjectImage.description }}</p>
-          <p style="margin-top: 0.5rem;">Versión actual: {{ selectedProjectImage.currentVersionId }} · Total versiones: {{ selectedProjectImage.versions.length }}</p>
+          <p style="margin-top: 0.5rem;">{{ t('images.currentVersion') }}: {{ selectedProjectImage.currentVersionId }} · {{ t('images.totalVersions') }}: {{ selectedProjectImage.versions.length }}</p>
         </div>
       </article>
     </section>
@@ -5430,10 +5432,10 @@ function onPromptKeydown(event: KeyboardEvent) {
     <section v-else class="canvas-wrap nav-placeholder">
       <div class="nav-placeholder-inner">
         <template v-if="primaryNav === 'components'">
-          <h2 class="nav-placeholder-title">Componentes</h2>
-          <p class="nav-placeholder-text">Exploración del catálogo BootstrapVue y packs extra. Sección en preparación.</p>
+          <h2 class="nav-placeholder-title">{{ t('app.components') }}</h2>
+          <p class="nav-placeholder-text">{{ t('app.componentsPlaceholder') }}</p>
         </template>
-        <button type="button" class="screen-action-btn nav-placeholder-back" @click="navigateToBuilder()">Volver al builder</button>
+        <button type="button" class="screen-action-btn nav-placeholder-back" @click="navigateToBuilder()">{{ t('app.backToBuilder') }}</button>
       </div>
     </section>
       </div>
@@ -5444,30 +5446,30 @@ function onPromptKeydown(event: KeyboardEvent) {
       class="screen-confirm-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Confirmar navegación con cambios sin guardar"
+      :aria-label="t('app.confirmNavigationUnsaved')"
       @click.self="cancelUnsavedChangesPrompt"
     >
       <div class="screen-confirm-modal">
         <header class="screen-confirm-header">
           <span class="screen-confirm-icon" aria-hidden="true">⟳</span>
           <div>
-            <h3 class="screen-confirm-title">Cambios sin guardar</h3>
-            <p class="screen-confirm-subtitle">La pantalla <strong>{{ unsavedNavigationScreenName }}</strong> tiene cambios pendientes.</p>
+            <h3 class="screen-confirm-title">{{ t('app.unsavedChanges') }}</h3>
+            <p class="screen-confirm-subtitle">{{ t('app.screenHasPendingChanges') }} <strong>{{ unsavedNavigationScreenName }}</strong>.</p>
           </div>
           <button
             type="button"
             class="screen-confirm-close"
             :disabled="isSavingBeforeFlowNavigation"
             @click="cancelUnsavedChangesPrompt"
-            aria-label="Cerrar confirmación"
+            :aria-label="t('common.close')"
           >
-            Cerrar
+            {{ t('common.close') }}
           </button>
         </header>
         <div class="screen-confirm-body">
           <p>
-            Tienes cambios sin guardar. ¿Quieres guardarlos antes de ir a
-            <strong>Flujos</strong>?
+            {{ t('app.unsavedBeforeFlows') }}
+            <strong>{{ t('app.flows') }}</strong>?
           </p>
         </div>
         <div class="screen-confirm-actions">
@@ -5477,7 +5479,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             :disabled="isSavingBeforeFlowNavigation"
             @click="cancelUnsavedChangesPrompt"
           >
-            Quedarse en builder
+            {{ t('app.stayInBuilder') }}
           </button>
           <button
             type="button"
@@ -5485,7 +5487,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             :disabled="isSavingBeforeFlowNavigation"
             @click="declineSaveAndContinueToFlows"
           >
-            Ir sin guardar
+            {{ t('app.goWithoutSaving') }}
           </button>
           <button
             type="button"
@@ -5493,7 +5495,7 @@ function onPromptKeydown(event: KeyboardEvent) {
             :disabled="isSavingBeforeFlowNavigation"
             @click="saveAndContinueToFlows"
           >
-            {{ isSavingBeforeFlowNavigation ? 'Guardando...' : 'Guardar y continuar' }}
+            {{ isSavingBeforeFlowNavigation ? t('common.saving') : t('app.saveAndContinue') }}
           </button>
         </div>
       </div>
@@ -5507,11 +5509,11 @@ function onPromptKeydown(event: KeyboardEvent) {
         </template>
         <template v-else-if="primaryNav === 'flows'">
           <span class="app-status-dot app-status-dot--ok" aria-hidden="true"></span>
-          <span class="app-status-name">Flujo de tareas</span>
+          <span class="app-status-name">{{ t('flow.taskFlow') }}</span>
         </template>
         <template v-else-if="primaryNav === 'execution'">
           <span class="app-status-dot app-status-dot--ok" aria-hidden="true"></span>
-          <span class="app-status-name">Ejecución de prototype</span>
+          <span class="app-status-name">{{ t('app.prototypeExecution') }}</span>
         </template>
         <template v-else>
           <span class="app-status-name">Rapid Prototype Builder</span>
@@ -5520,7 +5522,7 @@ function onPromptKeydown(event: KeyboardEvent) {
       <div class="app-statusbar-center">
         <span>{{ screens.length }} pantalla(s)</span>
         <span class="app-statusbar-sep">·</span>
-        <span>{{ flowEdges.length }} conexión(es)</span>
+        <span>{{ flowEdges.length }} {{ t('flow.connections') }}</span>
         <span class="app-statusbar-sep">·</span>
         <span>{{ flowTasks.length }} tarea(s)</span>
       </div>
