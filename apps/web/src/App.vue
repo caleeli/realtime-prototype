@@ -291,6 +291,7 @@ const projects = ref<ProjectSummary[]>([]);
 const activeProjectId = ref('');
 const isLoadingProjects = ref(false);
 const isExportingProject = ref(false);
+const isSyncingProject = ref(false);
 const isScreenDirty = ref(false);
 const projectSettings = ref<ProjectSettings | null>(null);
 const isLoadingProjectSettings = ref(false);
@@ -1541,6 +1542,27 @@ async function onExportClick() {
     message.value = 'No se pudo exportar el proyecto.';
   } finally {
     isExportingProject.value = false;
+  }
+}
+
+async function onSyncClick() {
+  const projectId = activeProjectId.value.trim();
+  if (!projectId) {
+    message.value = 'Selecciona un proyecto para sincronizar.';
+    return;
+  }
+  if (isSyncingProject.value) {
+    return;
+  }
+
+  isSyncingProject.value = true;
+  try {
+    await sessionService.syncProject(projectId, projectExportBaseMapper);
+    message.value = 'Proyecto sincronizado con ProcessMaker.';
+  } catch (error) {
+    message.value = error instanceof Error ? error.message : 'No se pudo sincronizar el proyecto.';
+  } finally {
+    isSyncingProject.value = false;
   }
 }
 
@@ -4369,6 +4391,10 @@ function onPromptKeydown(event: KeyboardEvent) {
         <button type="button" class="app-text-btn" :disabled="isExportingProject || isSessionLoading || !activeProjectId" @click="onExportClick">
           <i class="bi bi-download" aria-hidden="true"></i>
           {{ isExportingProject ? t('common.exporting') : t('common.export') }}
+        </button>
+        <button type="button" class="app-text-btn" :disabled="isSyncingProject || isSessionLoading || !activeProjectId" @click="onSyncClick">
+          <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
+          {{ isSyncingProject ? t('common.syncing') : t('common.sync') }}
         </button>
         <button type="button" class="app-text-btn" @click="onShareClick">
           <i class="bi bi-share" aria-hidden="true"></i>

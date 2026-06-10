@@ -78,6 +78,8 @@ const inspirationGoogleVisionAPIKeyEnv = "INSPIRATION_GOOGLE_VISION_API_KEY"
 const inspirationImageCacheEnabledEnv = "INSPIRATION_IMAGE_CACHE_ENABLED"
 const inspirationImageCacheDirEnv = "INSPIRATION_IMAGE_CACHE_DIR"
 const inspirationImageCacheDefaultDir = "cache/inspiration/images"
+const processMakerAPISyncURLEnv = "PROCESSMAKER_API_SYNC_URL"
+const processMakerAPITokenEnv = "PROCESSMAKER_API_TOKEN"
 const inspirationImageProviderGoogle = "google"
 const inspirationImageProviderOpenAI = "openai"
 
@@ -288,56 +290,18 @@ func main() {
 				return
 			}
 
-			snapshot, err := sessionStore.getSnapshot(r.Context(), project.ID)
-			if err != nil {
-				getProjectMethodError(w, err)
-				return
-			}
-			flowDiagram, _, err := sessionStore.loadFlowDiagram(r.Context(), project.ID)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-				return
-			}
-			projectSettings, err := sessionStore.getProjectSettings(r.Context(), project.ID)
-			if err != nil {
-				getProjectMethodError(w, err)
-				return
-			}
-
-			screens := make([]projectExportScreen, 0, len(snapshot.Screens))
-			for _, screen := range snapshot.Screens {
-				state, stateErr := sessionStore.getLatestState(r.Context(), screen.ID)
-				if stateErr != nil && !errors.Is(stateErr, sql.ErrNoRows) {
-					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": stateErr.Error()})
-					return
-				}
-				if errors.Is(stateErr, sql.ErrNoRows) {
-					state = nil
-				}
-				screens = append(screens, projectExportScreen{
-					Screen:      screen,
-					LatestState: state,
-				})
-			}
-
-			source := projectExportSource{
-				Version:       "1.0",
-				ExportedAt:    time.Now().UTC().Format(time.RFC3339),
-				Project:       project,
-				Snapshot:      snapshot,
-				FlowDiagram:   flowDiagram,
-				ProjectConfig: projectSettings,
-				Screens:       screens,
-			}
-
 			mapper := payload.Mapper
 			if mapper == nil {
 				base := defaultProjectExportMapper()
 				mapper = &base
 			}
-			exported, err := transformProjectExport(source, *mapper)
+			exported, err := buildProjectExportPayload(r.Context(), sessionStore, project, *mapper)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				if isProjectExportMapperError(err) {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				} else {
+					getProjectMethodError(w, err)
+				}
 				return
 			}
 
@@ -354,6 +318,46 @@ func main() {
 			if _, err := w.Write(exportBytes); err != nil {
 				log.Printf("failed to write export payload: %v", err)
 			}
+			return
+
+		case subPath == "sync":
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+
+			var payload struct {
+				Mapper *projectExportMapper `json:"mapper"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && !errors.Is(err, io.EOF) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json payload"})
+				return
+			}
+
+			mapper := payload.Mapper
+			if mapper == nil {
+				base := defaultProjectExportMapper()
+				mapper = &base
+			}
+			exported, err := buildProjectExportPayload(r.Context(), sessionStore, project, *mapper)
+			if err != nil {
+				if isProjectExportMapperError(err) {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				} else {
+					getProjectMethodError(w, err)
+				}
+				return
+			}
+
+			upstreamStatus, err := syncProjectExportToProcessMaker(r.Context(), exported)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":         "synced",
+				"upstreamStatus": upstreamStatus,
+			})
 			return
 
 		case subPath == "flow-diagram":
@@ -1006,6 +1010,105 @@ type projectExportMapper struct {
 	Version    string                     `json:"version"`
 	OutputPath string                     `json:"outputPath"`
 	Operations []exportTransformOperation `json:"operations"`
+}
+
+type projectExportMapperError struct {
+	err error
+}
+
+func (e projectExportMapperError) Error() string {
+	return e.err.Error()
+}
+
+func (e projectExportMapperError) Unwrap() error {
+	return e.err
+}
+
+func isProjectExportMapperError(err error) bool {
+	var mapperErr projectExportMapperError
+	return errors.As(err, &mapperErr)
+}
+
+func buildProjectExportPayload(ctx context.Context, sessionStore *sessionProjectStore, project projectRecord, mapper projectExportMapper) (map[string]any, error) {
+	snapshot, err := sessionStore.getSnapshot(ctx, project.ID)
+	if err != nil {
+		return nil, err
+	}
+	flowDiagram, _, err := sessionStore.loadFlowDiagram(ctx, project.ID)
+	if err != nil {
+		return nil, err
+	}
+	projectSettings, err := sessionStore.getProjectSettings(ctx, project.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	screens := make([]projectExportScreen, 0, len(snapshot.Screens))
+	for _, screen := range snapshot.Screens {
+		state, stateErr := sessionStore.getLatestState(ctx, screen.ID)
+		if stateErr != nil && !errors.Is(stateErr, sql.ErrNoRows) {
+			return nil, stateErr
+		}
+		if errors.Is(stateErr, sql.ErrNoRows) {
+			state = nil
+		}
+		screens = append(screens, projectExportScreen{
+			Screen:      screen,
+			LatestState: state,
+		})
+	}
+
+	source := projectExportSource{
+		Version:       "1.0",
+		ExportedAt:    time.Now().UTC().Format(time.RFC3339),
+		Project:       project,
+		Snapshot:      snapshot,
+		FlowDiagram:   flowDiagram,
+		ProjectConfig: projectSettings,
+		Screens:       screens,
+	}
+
+	exported, err := transformProjectExport(source, mapper)
+	if err != nil {
+		return nil, projectExportMapperError{err: err}
+	}
+	return exported, nil
+}
+
+func syncProjectExportToProcessMaker(ctx context.Context, prototype map[string]any) (int, error) {
+	endpoint := strings.TrimSpace(os.Getenv(processMakerAPISyncURLEnv))
+	if endpoint == "" {
+		return 0, fmt.Errorf("%s env variable is required", processMakerAPISyncURLEnv)
+	}
+	token := strings.TrimSpace(os.Getenv(processMakerAPITokenEnv))
+	if token == "" {
+		return 0, fmt.Errorf("%s env variable is required", processMakerAPITokenEnv)
+	}
+
+	body, err := json.Marshal(map[string]any{"prototype": prototype})
+	if err != nil {
+		return 0, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
+		return response.StatusCode, fmt.Errorf("processmaker sync failed with status %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	return response.StatusCode, nil
 }
 
 func defaultProjectExportMapper() projectExportMapper {

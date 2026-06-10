@@ -58,6 +58,8 @@
     "duplicate": "Duplicate",
     "export": "Export",
     "exporting": "Exporting...",
+    "sync": "Sync",
+    "syncing": "Syncing...",
     "share": "Share",
     "prompt": "Prompt",
     "theme": "Theme",

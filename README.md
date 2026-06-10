@@ -31,6 +31,8 @@ Después completa al menos:
   - `CEREBRAS_TEMPERATURE` (opcional)
   - `PORT` (por defecto `3000`)
   - `CORS_ALLOWED_ORIGIN` (por defecto `http://localhost:5173`)
+  - `PROCESSMAKER_API_SYNC_URL` (opcional, endpoint POST para sincronizar el proyecto exportado)
+  - `PROCESSMAKER_API_TOKEN` (opcional, token Bearer para sincronización)
 
 - `apps/web/.env`
   - `VITE_API_BASE_URL` (por defecto `http://localhost:3000/api`)

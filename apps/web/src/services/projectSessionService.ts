@@ -185,6 +185,11 @@ export type ProjectExportDownload = {
   fileName: string;
 };
 
+export type ProjectSyncResult = {
+  status: string;
+  upstreamStatus: number;
+};
+
 function parseResponse<T>(response: Response): Promise<T> {
   return response.text().then((text) => {
     if (!response.ok) {
@@ -515,5 +520,14 @@ export class ProjectSessionService {
     const fileNameMatch = disposition.match(/filename="([^"]+)"/i);
     const fileName = fileNameMatch?.[1]?.trim() || 'project-export.json';
     return { blob, fileName };
+  }
+
+  async syncProject(projectId = '', mapper?: ProjectExportMapper): Promise<ProjectSyncResult> {
+    const response = await fetch(addProjectQuery(`${this.baseUrl}${SESSION_ENDPOINT}/sync`, projectId), {
+      method: 'POST',
+      headers: buildHeaders(),
+      body: JSON.stringify(mapper ? { mapper } : {}),
+    });
+    return parseResponse<ProjectSyncResult>(response);
   }
 }
