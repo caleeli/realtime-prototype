@@ -30,11 +30,12 @@ const (
 )
 
 var (
-	errProjectNotFound      = errors.New("project not found")
-	errProjectNameRequired  = errors.New("project name is required")
-	errProjectDeleteDefault = errors.New("default project cannot be deleted")
-	errProjectDeleteLast    = errors.New("cannot delete the last project")
-	errScreenNameRequired   = errors.New("screen name is required")
+	errProjectNotFound        = errors.New("project not found")
+	errProjectNameRequired    = errors.New("project name is required")
+	errProjectDeleteDefault   = errors.New("default project cannot be deleted")
+	errProjectDeleteLast      = errors.New("cannot delete the last project")
+	errScreenNameRequired     = errors.New("screen name is required")
+	errScreenRevisionConflict = errors.New("screen revision conflict")
 )
 
 type sessionChatMessage struct {
@@ -87,6 +88,7 @@ type saveScreenStateRequest struct {
 	Conversation    []sessionChatMessage `json:"conversation"`
 	Recommendations []string             `json:"recommendations"`
 	Payload         sessionPayload       `json:"screenPayload"`
+	BaseRevision    *int                 `json:"baseRevision,omitempty"`
 }
 
 type projectRecord struct {
@@ -1161,9 +1163,14 @@ func (s *sessionProjectStore) saveState(ctx context.Context, projectID, screenID
 			return os.ErrNotExist
 		}
 
-		if txErr = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision), 0) + 1 FROM screen_states WHERE screen_id = ?;`, screenID).Scan(&revision); txErr != nil {
+		var currentRevision int
+		if txErr = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision), 0) FROM screen_states WHERE screen_id = ?;`, screenID).Scan(&currentRevision); txErr != nil {
 			return txErr
 		}
+		if payload.BaseRevision != nil && *payload.BaseRevision != currentRevision {
+			return errScreenRevisionConflict
+		}
+		revision = currentRevision + 1
 
 		now = time.Now().UTC().Format(time.RFC3339)
 		var result sql.Result
@@ -1249,6 +1256,19 @@ func (s *sessionProjectStore) getLatestState(ctx context.Context, screenID strin
 		Recommendations: recommendations,
 		CreatedAt:       row.CreatedAt,
 	}, nil
+}
+
+func (s *sessionProjectStore) screenBelongsToProject(ctx context.Context, projectID, screenID string) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(1) FROM screens WHERE id = ? AND project_id = ? AND is_deleted = 0;`,
+		screenID,
+		projectID,
+	).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (s *sessionProjectStore) getSnapshot(ctx context.Context, projectID string) (sessionSnapshot, error) {

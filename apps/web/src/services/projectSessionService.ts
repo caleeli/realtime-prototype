@@ -51,6 +51,7 @@ type SaveScreenStateRequest = {
   conversation: SessionChatMessage[];
   recommendations: string[];
   screenPayload: ScreenPayload;
+  baseRevision?: number;
 };
 
 export type SessionScreenState = {

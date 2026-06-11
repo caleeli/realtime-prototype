@@ -45,13 +45,25 @@ import {
   type ProjectImageAsset,
   type ProjectExportMapper,
 } from './services/projectSessionService';
+import {
+  ScreenCollaborationService,
+  type CollaborationDraft,
+  type CollaborationEvent,
+  type CollaborationField,
+  type CollaborationPresence,
+} from './services/screenCollaborationService';
 import ProjectSettingsPanel from './components/ProjectSettingsPanel.vue';
 
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
 const pipelineService = new GenerationPipelineService({
-  baseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api',
+  baseUrl: apiBaseUrl,
 });
 const sessionService = new ProjectSessionService({
-  baseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api',
+  baseUrl: apiBaseUrl,
+});
+const collaborationService = new ScreenCollaborationService({
+  baseUrl: apiBaseUrl,
+  name: 'Editor',
 });
 const { t } = useI18n();
 
@@ -363,6 +375,12 @@ const uxEvaluationStatus = ref<'idle' | 'loading' | 'ready' | 'error'>('idle');
 const uxEvaluationMessage = ref('');
 const cleanupStyle = ref<(() => void) | null>(null);
 const screenRevision = ref(0);
+const activeSavedRevision = ref(0);
+const collaborationStatus = ref<'idle' | 'connecting' | 'connected' | 'disconnected' | 'error'>('idle');
+const collaborationPresence = ref<CollaborationPresence[]>([]);
+const collaborationDocVersion = ref(0);
+const isApplyingRemoteCollaboration = ref(false);
+const collaborationBroadcastTimers = new Map<CollaborationField, ReturnType<typeof setTimeout>>();
 const isProcessingHashNavigation = ref(false);
 const popupRuntimeCounter = ref(0);
 const BOOTSWATCH_VERSION = '5.3.8';
@@ -547,6 +565,135 @@ function cloneDataValue(value: unknown) {
   } catch (_error) {
     return {};
   }
+}
+
+function queueCollaborationFieldUpdate(field: CollaborationField, value: unknown) {
+  if (isApplyingRemoteCollaboration.value || collaborationStatus.value !== 'connected') {
+    return;
+  }
+  const existingTimer = collaborationBroadcastTimers.get(field);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+  const timer = setTimeout(() => {
+    collaborationBroadcastTimers.delete(field);
+    collaborationService.sendFieldUpdate(field, value);
+  }, 250);
+  collaborationBroadcastTimers.set(field, timer);
+}
+
+function queueCollaborationOutputUpdate(output: GenerationPipelineResult) {
+  queueCollaborationFieldUpdate('sourcePug', output.sourcePug ?? '');
+  queueCollaborationFieldUpdate('css', output.css ?? '');
+  queueCollaborationFieldUpdate('data', output.data ?? {});
+}
+
+async function applyCollaborationDraft(draft: CollaborationDraft) {
+  collaborationDocVersion.value = draft.docVersion || collaborationDocVersion.value;
+  activeSavedRevision.value = draft.baseRevision || activeSavedRevision.value;
+  if (!draft.sourcePug && !draft.css) {
+    return;
+  }
+  await renderCollaborativeState({
+    sourcePug: draft.sourcePug || '',
+    css: draft.css || '',
+    data: draft.data ?? {},
+  });
+}
+
+async function applyCollaborationFieldUpdate(event: Extract<CollaborationEvent, { type: 'field_updated' }>) {
+  if (event.clientId === collaborationService.id) {
+    return;
+  }
+  collaborationDocVersion.value = event.docVersion || collaborationDocVersion.value;
+  const output = lastGeneratedOutput.value;
+  const next = {
+    sourcePug: output?.sourcePug ?? '',
+    css: output?.css ?? '',
+    data: cloneDataValue(output?.data ?? {}),
+  };
+  if (event.field === 'sourcePug') {
+    next.sourcePug = String(event.value ?? '');
+  } else if (event.field === 'css') {
+    next.css = String(event.value ?? '');
+  } else if (event.field === 'data') {
+    next.data = cloneDataValue(event.value ?? {});
+  }
+  await renderCollaborativeState(next);
+  isScreenDirty.value = true;
+  message.value = `${event.clientName || 'Otro editor'} actualizó ${event.field}.`;
+}
+
+async function renderCollaborativeState(payload: { sourcePug: string; css: string; data: unknown }) {
+  isApplyingRemoteCollaboration.value = true;
+  try {
+    const nextStyleId = `pipeline-runtime-collaboration-${screenRevision.value + 1}`;
+    const pipelineOutput = await pipelineService.renderFromStoredState({
+      pug: payload.sourcePug,
+      css: payload.css,
+      data: payload.data,
+      messages: lastGeneratedOutput.value?.messages ?? buildUserPayloadMessages(conversation.value),
+    });
+    const previousStyleCleanup = cleanupStyle.value;
+    const renderedView = await buildGeneratedScreen(pipelineOutput, {
+      componentLoaders,
+      styleId: nextStyleId,
+      runtimeContext: createRuntimeContext(),
+    });
+
+    cleanupStyle.value = renderedView.installStyles;
+    generatedState.value = {
+      view: renderedView,
+      component: renderedView.component,
+    };
+    generatedComponent.value = markRaw(renderedView.component);
+    lastGeneratedOutput.value = pipelineOutput;
+    screenRevision.value += 1;
+
+    if (previousStyleCleanup) {
+      previousStyleCleanup();
+    }
+  } finally {
+    isApplyingRemoteCollaboration.value = false;
+  }
+}
+
+function handleCollaborationEvent(event: CollaborationEvent) {
+  if (event.type === 'snapshot') {
+    void applyCollaborationDraft(event.draft);
+    return;
+  }
+  if (event.type === 'presence') {
+    collaborationPresence.value = event.presence.filter((entry) => entry.id !== collaborationService.id);
+    return;
+  }
+  if (event.type === 'field_updated') {
+    void applyCollaborationFieldUpdate(event);
+    return;
+  }
+  if (event.type === 'error') {
+    message.value = event.message;
+  }
+}
+
+function connectScreenCollaboration() {
+  const projectId = activeProjectId.value.trim();
+  const screenId = activeScreenId.value.trim();
+  collaborationPresence.value = [];
+  collaborationDocVersion.value = 0;
+  if (!projectId || !screenId) {
+    collaborationService.disconnect();
+    collaborationStatus.value = 'idle';
+    return;
+  }
+  collaborationService.connect({
+    projectId,
+    screenId,
+    onEvent: handleCollaborationEvent,
+    onStatus: (status) => {
+      collaborationStatus.value = status;
+    },
+  });
 }
 
 watch(lastGeneratedOutput, (output) => {
@@ -2025,6 +2172,7 @@ async function applyDataToCurrentOutput(parsedData: unknown) {
   lastGeneratedOutput.value = updatedOutput;
   screenRevision.value += 1;
   isScreenDirty.value = true;
+  queueCollaborationFieldUpdate('data', updatedOutput.data);
 
   if (previousStyleCleanup) {
     previousStyleCleanup();
@@ -2060,6 +2208,7 @@ async function applyCssToCurrentOutput(css: string) {
   lastGeneratedOutput.value = updatedOutput;
   screenRevision.value += 1;
   isScreenDirty.value = true;
+  queueCollaborationFieldUpdate('css', updatedOutput.css ?? '');
 
   if (previousStyleCleanup) {
     previousStyleCleanup();
@@ -2126,6 +2275,7 @@ async function applyPugToCurrentOutput(pugTemplate: string) {
   lastGeneratedOutput.value = pipelineOutput;
   screenRevision.value += 1;
   isScreenDirty.value = true;
+  queueCollaborationFieldUpdate('sourcePug', pipelineOutput.sourcePug ?? '');
 
   if (previousStyleCleanup) {
     previousStyleCleanup();
@@ -2454,6 +2604,7 @@ function getFallbackScreenIdForDeletion(removedScreenId: string): string | null 
 async function hydrateFromSessionState(state: SessionScreenState | null) {
   clearSelectorImprovementBubbles();
   if (!state) {
+    activeSavedRevision.value = 0;
     clearGeneratedState('Esta pantalla aún no tiene estado guardado. Genera una versión para persistirla.');
     conversation.value = [];
     uxEvaluations.value = [];
@@ -2486,6 +2637,7 @@ async function hydrateFromSessionState(state: SessionScreenState | null) {
   };
   generatedComponent.value = markRaw(renderedView.component);
   screenRevision.value += 1;
+  activeSavedRevision.value = state.revision;
   lastGeneratedOutput.value = pipelineOutput;
   conversation.value = normalizeChatMessages(state.conversation as ChatMessage[]);
   uxEvaluations.value = state.recommendations || [];
@@ -3117,6 +3269,7 @@ async function openScreen(screenId: string, options: OpenScreenOptions = {}) {
     activeScreenId.value = trimmed;
     syncFlowTasksToScreens(screens.value);
     syncBrowserHashForScreen(trimmed);
+    connectScreenCollaboration();
   } finally {
     isSessionLoading.value = false;
   }
@@ -3136,6 +3289,7 @@ async function restoreLastSession(projectId = '') {
       activeScreenId.value = session.activeScreenId;
       await hydrateSessionStateOrReset(session.activeState);
       syncBrowserHashForScreen(session.activeScreenId);
+      connectScreenCollaboration();
     } else if (screens.value.length > 0) {
       await openScreen(screens.value[0]?.id ?? '');
     } else {
@@ -3199,9 +3353,11 @@ async function saveCurrentScreen() {
         messages: output?.messages ?? buildUserPayloadMessages(conversation.value),
         metadata: output?.metadata,
       },
+      baseRevision: activeSavedRevision.value,
     };
 
-    await sessionService.saveScreenState(currentScreenId, payload, activeProjectId.value);
+    const savedState = await sessionService.saveScreenState(currentScreenId, payload, activeProjectId.value);
+    activeSavedRevision.value = savedState.revision;
     const session = await refreshScreensFromSession();
     screens.value = session.screens || screens.value;
     isScreenDirty.value = false;
@@ -3215,6 +3371,14 @@ async function saveCurrentScreen() {
         void ensureFlowTaskPreview(task.id, task.screenId);
       }
     }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('newer saved revision')) {
+      message.value = 'La pantalla tiene una revisión más nueva. Recargando antes de guardar de nuevo.';
+      const latest = await sessionService.loadLatestState(currentScreenId, activeProjectId.value);
+      await hydrateSessionStateOrReset(latest);
+      return;
+    }
+    throw error;
   } finally {
     isSaving.value = false;
   }
@@ -3568,6 +3732,7 @@ async function applySelectorImprovement(bubble: SelectorImprovementBubble) {
     lastGeneratedOutput.value = bubble.pipelineOutput;
     screenRevision.value += 1;
     isScreenDirty.value = true;
+    queueCollaborationOutputUpdate(bubble.pipelineOutput);
 
     if (previousStyleCleanup) {
       previousStyleCleanup();
@@ -3664,6 +3829,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
     clearDataGenerationHistory();
     clearPugGenerationHistory();
     screenRevision.value += 1;
+    queueCollaborationOutputUpdate(pipelineOutput);
     await nextTick();
     void generateSelectorImprovements(prompt, pipelineOutput);
 
@@ -3674,7 +3840,7 @@ async function renderPipeline(prompt: string, history: ChatMessage[]) {
     message.value = renderedView.missingComponents.length
       ? `Pantalla renderizada con componentes faltantes: ${renderedView.missingComponents.join(', ')}`
       : 'Pantalla renderizada correctamente.';
-  isScreenDirty.value = true;
+    isScreenDirty.value = true;
   } catch (error) {
     clearSelectorImprovementBubbles();
     message.value = error instanceof Error ? error.message : 'No se pudo generar la pantalla.';
@@ -4298,6 +4464,11 @@ onBeforeUnmount(() => {
     clearTimeout(flowDiagramSaveTimer.value);
     flowDiagramSaveTimer.value = null;
   }
+  for (const timer of collaborationBroadcastTimers.values()) {
+    clearTimeout(timer);
+  }
+  collaborationBroadcastTimers.clear();
+  collaborationService.disconnect();
   clearFlowTaskPreviews();
 });
 
@@ -4788,6 +4959,21 @@ function onPromptKeydown(event: KeyboardEvent) {
               <i class="bi bi-save2" aria-hidden="true"></i>
               {{ isSaving ? t('common.saving') : t('common.save') }}
             </button>
+            <div
+              class="collaboration-status"
+              :class="{
+                'collaboration-status--connected': collaborationStatus === 'connected',
+                'collaboration-status--error': collaborationStatus === 'error',
+              }"
+              :title="collaborationPresence.map((entry) => entry.name).join(', ')"
+            >
+              <i class="bi bi-people-fill" aria-hidden="true"></i>
+              <span v-if="collaborationPresence.length > 0">
+                {{ collaborationPresence.length }} editor(es)
+              </span>
+              <span v-else-if="collaborationStatus === 'connected'">Solo</span>
+              <span v-else>{{ collaborationStatus }}</span>
+            </div>
           </div>
         </div>
       </header>
@@ -6401,6 +6587,32 @@ function onPromptKeydown(event: KeyboardEvent) {
 .screen-toolbar .screen-action-btn i {
   margin-right: 0.25rem;
   font-size: 0.92rem;
+}
+
+.collaboration-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2.15rem;
+  padding: 0.42rem 0.7rem;
+  border: 1px solid var(--rp-border);
+  border-radius: 8px;
+  background: var(--rp-bg);
+  color: var(--rp-text-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.collaboration-status--connected {
+  border-color: rgba(16, 185, 129, 0.35);
+  color: #047857;
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.collaboration-status--error {
+  border-color: rgba(220, 38, 38, 0.35);
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.08);
 }
 
 .project-select {

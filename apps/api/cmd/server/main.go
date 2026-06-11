@@ -107,6 +107,7 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
+	collaboration := newCollaborationHub(sessionStore)
 
 	resolveProjectFromRequest := func(r *http.Request) (projectRecord, error) {
 		projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
@@ -221,6 +222,24 @@ func main() {
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
+	}))
+
+	mux.HandleFunc("/api/collaboration/screens/", withCORS(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		screenID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/collaboration/screens/"))
+		if screenID == "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		project, err := resolveProjectFromRequest(r)
+		if err != nil {
+			getProjectMethodError(w, err)
+			return
+		}
+		collaboration.handleScreen(w, r, project.ID, screenID)
 	}))
 
 	mux.HandleFunc("/api/component-registry", withCORS(func(w http.ResponseWriter, r *http.Request) {
@@ -570,6 +589,10 @@ func main() {
 				if err != nil {
 					if errors.Is(err, os.ErrNotExist) {
 						writeJSON(w, http.StatusNotFound, map[string]string{"error": "screen not found"})
+						return
+					}
+					if errors.Is(err, errScreenRevisionConflict) {
+						writeJSON(w, http.StatusConflict, map[string]string{"error": "screen has a newer saved revision"})
 						return
 					}
 					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
